@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{min-height:100vh;background:#fbf8f2;color:#17251f;font-family:'DM Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+::selection{background:#c46a4b;color:white}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:#f4efe7}
+::-webkit-scrollbar-thumb{background:#b3aaa0;border-radius:999px}
+input,textarea,select{background:#fff;color:#17251f;outline:none;transition:.2s}
+input:focus,textarea:focus,select:focus{border-color:#a84d33;box-shadow:0 0 0 3px rgba(168,77,51,.1)}
+.glass{background:rgba(251,248,242,.94);backdrop-filter:blur(14px)}
+.cyber-grid{background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);background-size:48px 48px}
+.card-hover{transition:transform .3s ease,box-shadow .3s ease}.card-hover:hover{transform:translateY(-4px);box-shadow:0 18px 50px rgba(23,37,31,.1)}
