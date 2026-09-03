@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Headphones, Loader2, LogIn, Send, ShieldCheck, UserRound, X } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Bot, Clock, Headphones, Loader2, Send, ShieldCheck, UserRound, X } from 'lucide-react';
 import { supportAPI, wsClient } from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -10,6 +9,19 @@ const quickQuestions = [
   'Can you match a reference fabric?',
   'Which technical tests are available?',
 ];
+
+const firstVisitGreeting = 'Hello, we’re working hard to find a human support agent for you…';
+
+function localMessage(senderType, content) {
+  return {
+    id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+    senderType,
+    senderId: senderType === 'customer' ? 'guest' : 'bot',
+    senderName: senderType === 'customer' ? 'Guest' : 'Kora · AI Assistant',
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
 
 const statusCopy = {
   bot_active: { label: 'AI assistant', tone: 'bg-emerald-100 text-emerald-700' },
@@ -74,6 +86,10 @@ export default function FloatingSupport({ isOpen, onClose }) {
   }, [isOpen, user?.id, user?.token]);
 
   useEffect(() => {
+    if (isOpen && !user?.token && messages.length === 0) setMessages([localMessage('bot', firstVisitGreeting)]);
+  }, [isOpen, user?.token, messages.length]);
+
+  useEffect(() => {
     const offMessage = wsClient.on('support.message.created', (message) => {
       if (!conversation || message.conversationId === conversation.id) setMessages((current) => mergeMessages(current, [message]));
     });
@@ -91,7 +107,15 @@ export default function FloatingSupport({ isOpen, onClose }) {
     setInput('');
     setSending(true);
     setError('');
-    try { applyResult(await supportAPI.sendMessage(content, conversation?.id)); }
+    try {
+      if (user?.token) {
+        applyResult(await supportAPI.sendMessage(content, conversation?.id));
+      } else {
+        setMessages((current) => mergeMessages(current, [localMessage('customer', content)]));
+        const result = await supportAPI.chat(content);
+        setMessages((current) => mergeMessages(current, [localMessage('bot', result.aiReply)]));
+      }
+    }
     catch (requestError) { setInput(content); setError(requestError.message); }
     finally { setSending(false); }
   };
@@ -110,7 +134,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
   const waiting = conversation?.status === 'waiting_human';
 
   return (
-    <section className="fixed bottom-24 right-3 z-50 flex h-[570px] max-h-[76vh] w-[calc(100vw-1.5rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:right-6" aria-label="Curva Fabric buyer support">
+    <section className="fixed bottom-[218px] right-3 z-50 flex h-[570px] max-h-[calc(100vh-234px)] w-[calc(100vw-1.5rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:right-6" aria-label="Curva Fabric buyer support">
       <header className="flex items-center justify-between bg-gradient-to-r from-primary to-secondary px-4 py-3 text-white">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">{humanActive ? <Headphones size={21} /> : <Bot size={21} />}</div>
@@ -119,24 +143,17 @@ export default function FloatingSupport({ isOpen, onClose }) {
         <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/15 hover:bg-white/25" aria-label="Close support chat"><X size={18} /></button>
       </header>
 
-      {!user ? (
-        <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"><LogIn size={26} /></div>
-          <h3 className="font-heading text-lg font-bold text-slate-900">Sign in to start a conversation</h3>
-          <p className="mt-2 text-sm leading-6 text-slate-500">Your RFQ requirements and conversation history will stay connected to your buyer account.</p>
-          <Link to="/login" onClick={onClose} className="mt-5 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white">Sign In / Register</Link>
-        </div>
-      ) : loading ? (
+      {loading ? (
         <div className="flex flex-1 items-center justify-center text-slate-400"><Loader2 className="animate-spin" size={28} /></div>
       ) : (
         <>
           <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-2">
             <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.tone}`}>{status.label}</span>
-            {!humanActive && !waiting && <button type="button" onClick={requestHuman} disabled={sending} className="flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline disabled:opacity-50"><Headphones size={14} />Talk to Sales</button>}
+            {user?.token && !humanActive && !waiting && <button type="button" onClick={requestHuman} disabled={sending} className="flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline disabled:opacity-50"><Headphones size={14} />Talk to Sales</button>}
             {waiting && <span className="text-xs text-amber-700">A representative will join here</span>}
           </div>
           <div className="flex-1 space-y-3 overflow-y-auto bg-gradient-to-b from-white to-blue-50/30 p-4">
-            {messages.map((message) => <MessageBubble key={message.id} message={message} customerId={user.id} />)}
+            {messages.map((message) => <MessageBubble key={message.id} message={message} customerId={user?.id || 'guest'} />)}
             {sending && <div className="flex items-center gap-2 text-xs text-slate-400"><Loader2 size={13} className="animate-spin" />Sending…</div>}
             <div ref={endRef} />
           </div>

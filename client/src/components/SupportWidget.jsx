@@ -20,17 +20,12 @@ export default function SupportWidget() {
   const isStaff = user?.role === 'admin' || ['seller', 'salesperson'].includes(user?.role);
   const isCustomer = !user || !isStaff;
 
-  // Customer: check localStorage on mount / when user loads
+  // Customer: keep the first-visit prompt visible until the widget is opened.
   useEffect(() => {
               //执行组件副作用逻辑
 
-    if (isCustomer && user) {
-      const hasClicked = localStorage.getItem(CLICKED_KEY);
-      if (!hasClicked) {
-        setShowDot(true);
-      }
-    }
-  }, [user?.id]); // re-check when user changes
+    if (isCustomer) setShowDot(!localStorage.getItem(CLICKED_KEY));
+  }, [isCustomer, user?.id]); // re-check when the visitor or role changes
 
   // Sales: listen for incoming IM messages
   useEffect(() => {
@@ -101,14 +96,14 @@ export default function SupportWidget() {
       {/* FAB Button */}
       <button
         onClick={handleToggle}
-        className={`fixed bottom-6 right-6 w-14 h-14 rounded-full bg-gradient-to-br from-primary to-secondary shadow-lg shadow-primary/30 flex items-center justify-center z-50 transition-all hover:scale-110 hover:shadow-xl hover:shadow-primary/40 ${
+        className={`fixed bottom-6 right-6 h-[178px] w-[178px] rounded-full bg-gradient-to-br from-primary to-secondary shadow-lg shadow-primary/30 flex items-center justify-center z-50 transition-all hover:scale-110 hover:shadow-xl hover:shadow-primary/40 ${
           isOpen ? 'rotate-90' : ''
         }`}
         title={isStaff ? 'Buyer Messages' : 'Wholesale Buyer Support'}
       >
         {/* Big Red Dot */}
         {showDot && (
-          <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[20px] h-[20px] bg-red-500 rounded-full border-[3px] border-white shadow-lg animate-pulse">
+          <span className="absolute -right-1.5 -top-1.5 flex h-7 min-w-7 items-center justify-center rounded-full border-[3px] border-white bg-red-500 shadow-lg animate-pulse">
             {isStaff && unreadCount > 0 ? (
               <span className="text-white text-[10px] font-bold leading-none px-1">
                 {unreadCount > 99 ? '99+' : unreadCount}
@@ -118,11 +113,11 @@ export default function SupportWidget() {
         )}
 
         {isOpen ? (
-          <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="h-14 w-14 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         ) : (
-          <MessageCircle size={26} className="text-white" />
+          <MessageCircle size={64} className="text-white" />
         )}
       </button>
 

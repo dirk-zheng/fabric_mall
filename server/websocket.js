@@ -554,7 +554,6 @@ async function handleQuoteSubmit(payload, ws) {
 // Support
 //处理客服聊天消息并返回匹配回复
 function handleSupportChat(payload, ws) {
-  checkAuth(ws);
   const { message } = payload || {};
   if (!message || !message.trim()) throw new Error('Message cannot be empty');
 
@@ -671,7 +670,7 @@ function handleSupportMessageSend(payload, ws) {
       } else {
         const result = getAIResponse(content);
         createdMessages.push(appendMessage({
-          senderType: 'bot', senderId: 'bot', senderName: 'Miss Lin · AI Assistant', content: result.reply,
+          senderType: 'bot', senderId: 'bot', senderName: 'Kora · AI Assistant', content: result.reply,
         }));
         void notifyRobotChat({ user: ws.user, message: content, matchedKeyword: result.matchedKeyword, timestamp: message.createdAt });
       }
@@ -1059,7 +1058,7 @@ const handlers = {
   'assortment.remove':  { fn: handleRfqAssortmentRemove, auth: true  },
   'assortment.clear':   { fn: handleRfqAssortmentClear,  auth: true  },
   'quote.submit':       { fn: handleQuoteSubmit,     auth: true  },
-  'support.chat':       { fn: handleSupportChat,   auth: true  },
+  'support.chat':       { fn: handleSupportChat,   auth: false },
   'support.faq':        { fn: handleSupportFAQ,    auth: false },
   'support.conversation.get': { fn: handleSupportConversationGet, auth: true },
   'support.message.send': { fn: handleSupportMessageSend, auth: true },

@@ -54,8 +54,8 @@ function createConversation(customer) {
   };
   store.conversations.push(conversation);
   appendMessageToStore(store, conversation, {
-    senderType: 'bot', senderId: 'bot', senderName: 'Miss Lin · AI Assistant',
-    content: 'Welcome to Curva Fabric. Tell us your end use, target composition, weight, stretch, shade, order meters and delivery needs. Ask about MOQ, swatches, pricing, testing or custom development, and request a sales representative at any time.',
+    senderType: 'bot', senderId: 'bot', senderName: 'Kora · AI Assistant',
+    content: 'Hello, we’re working hard to find a human support agent for you…',
   });
   persist(store);
   return { conversation: { ...conversation }, messages: listMessages(store, conversation.id) };
