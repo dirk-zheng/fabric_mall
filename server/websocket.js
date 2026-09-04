@@ -672,7 +672,26 @@ function handleSupportConversationGet(payload, ws) {
     }
     return result;
   }
-  return supportConversations.getCustomerConversation(ws.user);
+
+  const current = supportConversations.getCustomerConversation(ws.user).conversation;
+  if (current.status === 'bot_active' || current.status === 'resolved') {
+    const createdMessages = [];
+    const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
+      conversation.status = 'waiting_human';
+      conversation.botEnabled = false;
+      conversation.assignedTo = null;
+      conversation.assignedName = null;
+      conversation.claimedBy = null;
+      conversation.resolvedAt = null;
+      createdMessages.push(appendMessage({
+        senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+        content: 'You have been added to the sales queue. A fabric specialist will join this conversation shortly.',
+      }));
+    });
+    pushSupportUpdate(updated.conversation, createdMessages);
+  }
+
+  return supportConversations.getConversation(current.id);
 }
 
 function handleSupportMessageSend(payload, ws) {
