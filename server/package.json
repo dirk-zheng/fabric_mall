@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
+    "test": "node --test test/larkNotifications.test.js",
     "seed": "node seed.js",
     "db:install": "node scripts/install-schema.js",
     "db:migrate-users": "node scripts/migrate-user-json-to-mysql.js"
@@ -17,7 +18,6 @@
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.4",
-    "nodemailer": "^7.0.0",
     "uuid": "^10.0.0",
     "ws": "^8.21.0"
   }

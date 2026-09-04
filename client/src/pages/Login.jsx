@@ -5,7 +5,8 @@ import { Eye, EyeOff, Lock, User, ArrowRight, Loader2, Sparkles, Shield, Users, 
 
 //渲染:渲染Login组件或页面内容
 export default function Login() {
-  const [isLogin, setIsLogin] = useState(true);
+  const location = useLocation();
+  const [isLogin, setIsLogin] = useState(() => new URLSearchParams(location.search).get('mode') !== 'register');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -15,7 +16,6 @@ export default function Login() {
 
   const { login, register } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
 
   const from = location.state?.from?.pathname || '/';
 

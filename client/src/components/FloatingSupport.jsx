@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Clock, Headphones, Loader2, Send, ShieldCheck, UserRound, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { supportAPI, wsClient } from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -11,6 +12,19 @@ const quickQuestions = [
 ];
 
 const firstVisitGreeting = 'Hello, we’re working hard to find a human support agent for you…';
+const guestUsageStorageKey = 'curva_guest_chat_usage';
+
+function readGuestUsage() {
+  if (typeof window === 'undefined') return { visitorId: '', sentCount: 0, remaining: 10, registrationSuggested: false, limitReached: false };
+  try {
+    const saved = JSON.parse(localStorage.getItem(guestUsageStorageKey) || '{}');
+    if (saved.visitorId) return saved;
+  } catch { /* replace invalid local data */ }
+  const visitorId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const initial = { visitorId, sentCount: 0, remaining: 10, registrationSuggested: false, limitReached: false };
+  localStorage.setItem(guestUsageStorageKey, JSON.stringify(initial));
+  return initial;
+}
 
 function localMessage(senderType, content) {
   return {
@@ -68,6 +82,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [guestUsage, setGuestUsage] = useState(readGuestUsage);
   const endRef = useRef(null);
 
   const applyResult = useCallback((result) => {
@@ -111,8 +126,14 @@ export default function FloatingSupport({ isOpen, onClose }) {
       if (user?.token) {
         applyResult(await supportAPI.sendMessage(content, conversation?.id));
       } else {
+        const result = await supportAPI.chat(content, guestUsage.visitorId);
+        if (result.guestUsage) {
+          const nextUsage = { visitorId: guestUsage.visitorId, ...result.guestUsage };
+          setGuestUsage(nextUsage);
+          localStorage.setItem(guestUsageStorageKey, JSON.stringify(nextUsage));
+        }
+        if (result.blocked) return;
         setMessages((current) => mergeMessages(current, [localMessage('customer', content)]));
-        const result = await supportAPI.chat(content);
         setMessages((current) => mergeMessages(current, [localMessage('bot', result.aiReply)]));
       }
     }
@@ -132,6 +153,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
   const status = statusCopy[conversation?.status] || statusCopy.bot_active;
   const humanActive = conversation?.status === 'human_active';
   const waiting = conversation?.status === 'waiting_human';
+  const guestLimitReached = !user?.token && guestUsage.limitReached;
 
   return (
     <section className="fixed bottom-[218px] right-3 z-50 flex h-[570px] max-h-[calc(100vh-234px)] w-[calc(100vw-1.5rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:right-6" aria-label="Curva Fabric buyer support">
@@ -159,10 +181,17 @@ export default function FloatingSupport({ isOpen, onClose }) {
           </div>
           {!humanActive && !waiting && messages.length <= 3 && <div className="flex gap-2 overflow-x-auto border-t border-slate-100 px-3 py-2">{quickQuestions.map((question) => <button key={question} type="button" onClick={() => setInput(question)} className="shrink-0 rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:border-primary hover:text-primary">{question}</button>)}</div>}
           {error && <p role="alert" className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-600">{error}</p>}
+          {!user?.token && guestUsage.registrationSuggested && (
+            <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">{guestLimitReached ? 'Guest message limit reached' : `${guestUsage.remaining} guest messages remaining`}</p>
+              <p className="mt-1 text-xs text-amber-800">Create a free buyer account to continue chatting and keep your conversation.</p>
+              <Link to="/login?mode=register" onClick={onClose} className="mt-2 inline-flex rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">Create account</Link>
+            </div>
+          )}
           <div className="border-t border-slate-200 p-3">
             <div className="flex gap-2">
-              <input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} disabled={sending} maxLength={3000} placeholder={waiting ? 'Add more details for the sales team…' : 'Type your message…'} className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-primary focus:ring-2 focus:ring-primary/10" />
-              <button type="button" onClick={sendMessage} disabled={!input.trim() || sending} className="flex h-10 w-11 items-center justify-center rounded-xl bg-primary text-white disabled:opacity-40" aria-label="Send message"><Send size={17} /></button>
+              <input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} disabled={sending || guestLimitReached} maxLength={3000} placeholder={guestLimitReached ? 'Create an account to continue…' : waiting ? 'Add more details for the sales team…' : 'Type your message…'} className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:bg-slate-50" />
+              <button type="button" onClick={sendMessage} disabled={!input.trim() || sending || guestLimitReached} className="flex h-10 w-11 items-center justify-center rounded-xl bg-primary text-white disabled:opacity-40" aria-label="Send message"><Send size={17} /></button>
             </div>
             <p className="mt-2 flex items-center justify-center gap-1 text-[10px] text-slate-400"><ShieldCheck size={11} />Human representatives are clearly identified when they join.</p>
           </div>

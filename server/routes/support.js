@@ -1,6 +1,6 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { notifyRobotChat } = require('../services/emailNotifications');
+const { notifyRobotChat } = require('../services/larkNotifications');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const fs = require('fs');

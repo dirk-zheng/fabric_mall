@@ -5,7 +5,8 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const { JWT_SECRET, generateToken } = require('./middleware/auth');
-const { notifyRobotChat, notifyQuoteInquiry } = require('./services/emailNotifications');
+const { detectContactSignals, notifyLarkContactMessage, notifyRobotChat, notifyQuoteInquiry } = require('./services/larkNotifications');
+const { GUEST_MESSAGE_LIMIT, getGuestChatUsage } = require('./services/guestChatLimits');
 const supportConversations = require('./services/supportConversations');
 const db = require('./database');
 
@@ -76,6 +77,7 @@ function saveUserRfqAssortment(userId) {
 const imRooms = {};      // roomId → { roomId, members[], memberNames{}, lastMessage, updatedAt }
 const imMessages = {};   // roomId → [ { id, roomId, senderId, senderName, content, timestamp } ]
 const clientMap = new Map(); // userId → Set<WebSocket>
+const guestChatCounts = new Map(); // visitorId → accepted anonymous message count
 
 //获取或创建两个用户之间的即时通信房间
 function getOrCreateRoom(userA, userB) {
@@ -553,19 +555,67 @@ async function handleQuoteSubmit(payload, ws) {
 
 // Support
 //处理客服聊天消息并返回匹配回复
-function handleSupportChat(payload, ws) {
+async function handleSupportChat(payload, ws) {
   const { message } = payload || {};
   if (!message || !message.trim()) throw new Error('Message cannot be empty');
 
   const userMessage = message.trim();
+  const suppliedVisitorId = String(payload?.visitorId || '').trim();
+  const visitorId = /^[a-zA-Z0-9-]{16,100}$/.test(suppliedVisitorId) ? suppliedVisitorId : ws.guestChatId;
+  let guestMessageCount = null;
+
+  if (!ws.user) {
+    if (!guestChatCounts.has(visitorId)) {
+      const persistedCount = db.list('supportMessages')
+        .filter((item) => item.guestVisitorId === visitorId)
+        .length;
+      guestChatCounts.set(visitorId, persistedCount);
+    }
+    guestMessageCount = guestChatCounts.get(visitorId);
+    if (guestMessageCount >= GUEST_MESSAGE_LIMIT) {
+      return {
+        blocked: true,
+        message: 'Guest message limit reached. Create an account to continue chatting.',
+        guestUsage: getGuestChatUsage(guestMessageCount),
+      };
+    }
+    guestMessageCount += 1;
+    guestChatCounts.set(visitorId, guestMessageCount);
+  }
+
   const result = getAIResponse(userMessage);
   const timestamp = new Date().toISOString();
-  void notifyRobotChat({ user: ws.user, message: userMessage, matchedKeyword: result.matchedKeyword, timestamp });
+  if (!ws.user) {
+    const messageId = uuidv4();
+    try {
+      await db.upsert('supportMessages', messageId, {
+        id: messageId,
+        guestVisitorId: visitorId,
+        userMessage,
+        aiReply: result.reply,
+        matchedKeyword: result.matchedKeyword,
+        createdAt: timestamp,
+      });
+    } catch (error) {
+      guestChatCounts.set(visitorId, guestMessageCount - 1);
+      throw error;
+    }
+    void db.recordUserEvent({
+      sessionId: visitorId,
+      eventType: 'support.guest_chat_message',
+      entityType: 'support_message',
+      entityId: messageId,
+      data: { messageNumber: guestMessageCount },
+    }).catch((error) => console.error('Guest chat event recording failed:', error.message));
+  }
+  const notificationUser = ws.user || { id: visitorId, name: 'Anonymous visitor', username: 'guest' };
+  void notifyRobotChat({ user: notificationUser, message: userMessage, matchedKeyword: result.matchedKeyword, timestamp });
   return {
     userMessage,
     aiReply: result.reply,
     matchedKeyword: result.matchedKeyword,
-    timestamp
+    timestamp,
+    guestUsage: ws.user ? undefined : getGuestChatUsage(guestMessageCount),
   };
 }
 
@@ -608,7 +658,8 @@ function requireAssignedStaff(conversation, ws) {
 }
 
 function shouldRequestHuman(message) {
-  return /(human|person|sales|salesperson|representative|agent|人工|销售|业务员|管理员|whatsapp|quotation|formal quote)/i.test(message);
+  return detectContactSignals(message).length > 0
+    || /(human|person|sales|salesperson|representative|agent|人工|销售|业务员|管理员|quotation|formal quote)/i.test(message);
 }
 
 function handleSupportConversationGet(payload, ws) {
@@ -660,6 +711,7 @@ function handleSupportMessageSend(payload, ws) {
 
     if (!isStaff(ws.user) && conversation.status === 'bot_active') {
       if (shouldRequestHuman(content)) {
+        void notifyLarkContactMessage({ user: ws.user, message: content, timestamp: message.createdAt });
         conversation.status = 'waiting_human';
         conversation.botEnabled = false;
         conversation.priority = 'high';
@@ -1111,6 +1163,7 @@ function createWSServer(server) {
     ws.__alive = true;
     ws.user = null;
     ws.userId = null;
+    ws.guestChatId = uuidv4();
 
     // Auth via token query param
     try {

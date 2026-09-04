@@ -1,6 +1,6 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { notifyQuoteInquiry } = require('../services/emailNotifications');
+const { notifyQuoteInquiry } = require('../services/larkNotifications');
 const db = require('../database');
 
 const router = express.Router();

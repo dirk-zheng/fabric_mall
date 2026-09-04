@@ -115,10 +115,10 @@ export const quoteAPI = {
 // ─── 客服 API ─────────────────────────────────────
 
 export const supportAPI = {
-  chat: (message) =>
+  chat: (message, visitorId) =>
     {
           //处理回调函数逻辑
-          return wsClient.send('support.chat', { message });
+          return wsClient.send('support.chat', { message, visitorId });
         },
 
   getFAQ: () =>
