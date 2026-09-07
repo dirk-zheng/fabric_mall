@@ -5,7 +5,7 @@ const database = process.env.DB_NAME || 'curva_fabric_b2b';
 
 const validations = [
   ['users visitor_id format', "SELECT COUNT(*) count FROM users WHERE visitor_id NOT REGEXP '^[A-Za-z0-9-]{16,64}$'"],
-  ['users JSON identity', "SELECT COUNT(*) count FROM users WHERE user_name IS NULL OR CHAR_LENGTH(user_name) NOT BETWEEN 1 AND 255 OR NOT (JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) <=> visitor_id)"],
+  ['users JSON identity', "SELECT COUNT(*) count FROM users WHERE account IS NULL OR CHAR_LENGTH(account) NOT BETWEEN 1 AND 255 OR NOT (JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) <=> visitor_id)"],
   ['user_events visitor_id format', "SELECT COUNT(*) count FROM user_events WHERE visitor_id NOT REGEXP '^[A-Za-z0-9-]{16,64}$'"],
   ['RFQ visitor_id format or JSON identity', "SELECT COUNT(*) count FROM rfq_assortments WHERE visitor_id NOT REGEXP '^[A-Za-z0-9-]{16,64}$' OR NOT (JSON_UNQUOTE(JSON_EXTRACT(assortment_data, '$.visitorId')) <=> visitor_id)"],
   ['orphan RFQ rows', 'SELECT COUNT(*) count FROM rfq_assortments r LEFT JOIN users u ON u.visitor_id = r.visitor_id WHERE u.visitor_id IS NULL'],
@@ -17,7 +17,7 @@ const validations = [
 
 const constraints = [
   ['users', 'chk_users_visitor_id', "CHECK (visitor_id REGEXP '^[A-Za-z0-9-]{16,64}$')"],
-  ['users', 'chk_users_json_identity', "CHECK (user_name IS NOT NULL AND CHAR_LENGTH(user_name) BETWEEN 1 AND 255 AND JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) = visitor_id)"],
+  ['users', 'chk_users_account_identity', "CHECK (account IS NOT NULL AND CHAR_LENGTH(account) BETWEEN 1 AND 255 AND JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.visitorId')) = visitor_id)"],
   ['user_events', 'chk_user_events_visitor_id', "CHECK (visitor_id REGEXP '^[A-Za-z0-9-]{16,64}$')"],
   ['rfq_assortments', 'chk_rfq_assortments_visitor_id', "CHECK (visitor_id REGEXP '^[A-Za-z0-9-]{16,64}$')"],
   ['rfq_assortments', 'chk_rfq_assortments_json_identity', "CHECK (JSON_UNQUOTE(JSON_EXTRACT(assortment_data, '$.visitorId')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(assortment_data, '$.visitorId')) = visitor_id)"],

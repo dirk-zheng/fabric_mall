@@ -58,8 +58,8 @@ function assertRecordContract(name, recordKey, value, extraValue) {
   }
   if (name === 'users') {
     if (!/^[a-zA-Z0-9-]{16,64}$/.test(recordKey)) throw new Error('A valid visitorId is required.');
-    const userName = String(value?.userName || '').trim();
-    if (!userName || userName.length > 255) throw new Error('user_name must be 1 to 255 characters.');
+    const account = String(value?.account || '').trim();
+    if (!account || account.length > 255) throw new Error('account must be 1 to 255 characters.');
   }
   if (name === 'rfqAssortments' && !/^[a-zA-Z0-9-]{16,64}$/.test(recordKey)) throw new Error('A valid visitorId is required.');
   if (TABLES[name].extra) {
@@ -163,11 +163,11 @@ async function refresh(name) {
   return list(name);
 }
 
-async function refreshUsersByName(userName) {
-  const normalizedName = String(userName || '').trim().toLowerCase();
-  const [rows] = await pool.query('SELECT visitor_id AS record_key, user_data AS record_data FROM users WHERE user_name = ?', [normalizedName]);
+async function refreshUsersByAccount(account) {
+  const normalizedAccount = String(account || '').trim().toLowerCase();
+  const [rows] = await pool.query('SELECT visitor_id AS record_key, user_data AS record_data FROM users WHERE account = ?', [normalizedAccount]);
   for (const [key, user] of cache.users.entries()) {
-    if (String(user.userName || '').trim().toLowerCase() === normalizedName) cache.users.delete(key);
+    if (String(user.account || '').trim().toLowerCase() === normalizedAccount) cache.users.delete(key);
   }
   rows.forEach((row) => cache.users.set(String(row.record_key), parseJson(row.record_data)));
   return rows.map((row) => clone(parseJson(row.record_data)));
@@ -226,10 +226,10 @@ async function recordUserEvent(input = {}) {
   );
 }
 
-async function listUserBehavior(userName) {
-  const normalizedName = String(userName || '').trim().toLowerCase();
-  if (!normalizedName || !pool) return { visitorIds: [], events: [] };
-  const [userRows] = await pool.query('SELECT visitor_id AS visitorId FROM users WHERE user_name = ?', [normalizedName]);
+async function listUserBehavior(account) {
+  const normalizedAccount = String(account || '').trim().toLowerCase();
+  if (!normalizedAccount || !pool) return { visitorIds: [], events: [] };
+  const [userRows] = await pool.query('SELECT visitor_id AS visitorId FROM users WHERE account = ?', [normalizedAccount]);
   const visitorIds = userRows.map((row) => row.visitorId);
   if (!visitorIds.length || !pool) return { visitorIds, events: [] };
   const placeholders = visitorIds.map(() => '?').join(', ');
@@ -280,4 +280,4 @@ async function installSchema() {
   }
 }
 
-module.exports = { initializeDatabase, installSchema, list, get, upsert, batchUpsert, remove, replaceAll, refresh, refreshUsersByName, recordUserEvent, listUserBehavior, getDatabaseStatus, closeDatabase };
+module.exports = { initializeDatabase, installSchema, list, get, upsert, batchUpsert, remove, replaceAll, refresh, refreshUsersByAccount, recordUserEvent, listUserBehavior, getDatabaseStatus, closeDatabase };

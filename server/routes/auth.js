@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { generateToken, authenticateToken } = require('../middleware/auth');
 const db = require('../database');
-const { assertVisitorAvailable, bindVisitor, findAccount, normalizeUserName, normalizeVisitorId, safeAccount } = require('../services/identity');
+const { assertVisitorAvailable, bindVisitor, findAccount, normalizeAccount, normalizeVisitorId, safeAccount } = require('../services/identity');
 const supportConversations = require('../services/supportConversations');
 
 const router = express.Router();
@@ -14,33 +14,33 @@ function requestVisitorId(req) {
 //处理用户登录并返回用户信息与JWT令牌
 router.post('/login', async (req, res) => {
   try {
-    const userName = normalizeUserName(req.body?.userName);
+    const account = normalizeAccount(req.body?.account);
     const { password } = req.body || {};
     const visitorId = requestVisitorId(req);
 
-    if (!userName || !password) {
-      return res.status(400).json({ code: 400, message: 'user_name and password are required' });
+    if (!account || !password) {
+      return res.status(400).json({ code: 400, message: 'account and password are required' });
     }
 
-    await db.refreshUsersByName(userName);
-    const user = findAccount(userName);
+    await db.refreshUsersByAccount(account);
+    const user = findAccount(account);
 
     if (!user) {
-      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
-      return res.status(401).json({ code: 401, message: 'Invalid user_name or password' });
+      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { account } });
+      return res.status(401).json({ code: 401, message: 'Invalid account or password' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
-      return res.status(401).json({ code: 401, message: 'Invalid user_name or password' });
+      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { account } });
+      return res.status(401).json({ code: 401, message: 'Invalid account or password' });
     }
 
     const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
     await supportConversations.linkVisitorToUser(visitorId, boundUser);
     const token = generateToken(boundUser);
-    await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
-    const behavior = await db.listUserBehavior(userName);
+    await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', ip: req.ip, userAgent: req.get('user-agent'), data: { account } });
+    const behavior = await db.listUserBehavior(account);
 
     res.json({
       code: 200,
@@ -62,52 +62,52 @@ router.post('/login', async (req, res) => {
 //处理新用户注册并生成登录令牌
 router.post('/register', async (req, res) => {
   try {
-    const userName = normalizeUserName(req.body?.userName);
+    const account = normalizeAccount(req.body?.account);
     const { password, name, quoteReference } = req.body || {};
     const visitorId = requestVisitorId(req);
 
-    if (!userName || !password) {
-      return res.status(400).json({ code: 400, message: 'user_name and password are required' });
+    if (!account || !password) {
+      return res.status(400).json({ code: 400, message: 'account and password are required' });
     }
 
     if (typeof password !== 'string' || password.length < 6) {
       return res.status(400).json({ code: 400, message: 'Password must be at least 6 characters' });
     }
 
-    await db.refreshUsersByName(userName);
-    if (findAccount(userName)) {
-      return res.status(409).json({ code: 409, message: 'An account already uses this user_name' });
+    await db.refreshUsersByAccount(account);
+    if (findAccount(account)) {
+      return res.status(409).json({ code: 409, message: 'This account is already registered' });
     }
 
-    assertVisitorAvailable(userName, visitorId);
+    assertVisitorAvailable(account, visitorId);
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = {
       visitorId,
-      userName,
+      account,
       password: hashedPassword,
       role: 'user',
-      name: name || userName,
+      name: name || account,
       createdAt: new Date().toISOString(),
     };
 
     await db.upsert('users', visitorId, newUser);
     await supportConversations.linkVisitorToUser(visitorId, newUser);
 
-    if (quoteReference && userName.includes('@')) {
+    if (quoteReference && account.includes('@')) {
       const quotes = db.list('quotes');
-      const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === userName);
+      const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === account);
       if (quote) {
         quote.visitorId = visitorId;
-        quote.userName = userName;
+        quote.account = account;
         quote.accountLinkedAt = new Date().toISOString();
         await db.upsert('quotes', quote.id, quote);
       }
     }
 
     const token = generateToken(newUser);
-    await db.recordUserEvent({ visitorId, eventType: 'auth.registered', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
-    const behavior = await db.listUserBehavior(userName);
+    await db.recordUserEvent({ visitorId, eventType: 'auth.registered', ip: req.ip, userAgent: req.get('user-agent'), data: { account } });
+    const behavior = await db.listUserBehavior(account);
 
     res.status(201).json({
       code: 201,
@@ -128,7 +128,7 @@ router.post('/register', async (req, res) => {
 // GET /api/auth/me
 //返回当前已登录用户信息
 router.get('/me', authenticateToken, async (req, res) => {
-  const behavior = await db.listUserBehavior(req.user.userName);
+  const behavior = await db.listUserBehavior(req.user.account);
   res.json({
     code: 200,
     data: { user: req.user, behavior }

@@ -80,7 +80,7 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const timestamp = new Date().toISOString();
     const messageId = uuidv4();
     await db.upsert('supportMessages', messageId, {
-      id: messageId, visitorId: req.user.visitorId, userName: req.user.userName, userMessage, aiReply: result.reply,
+      id: messageId, visitorId: req.user.visitorId, account: req.user.account, userMessage, aiReply: result.reply,
       matchedKeyword: result.matchedKeyword, createdAt: timestamp,
     });
     await db.recordUserEvent({

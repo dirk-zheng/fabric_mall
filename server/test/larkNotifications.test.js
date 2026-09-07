@@ -59,7 +59,7 @@ test('pushes matching chat content to the configured Lark webhook', async (t) =>
   };
 
   const result = await notifyLarkContactMessage({
-    user: { visitorId: 'visitor-lark-test-1', name: 'Buyer', userName: 'buyer' },
+    user: { visitorId: 'visitor-lark-test-1', name: 'Buyer', account: 'buyer' },
     message: 'My Telegram is @fabricbuyer',
     timestamp: '2026-09-04T00:00:00.000Z',
   });
@@ -106,7 +106,7 @@ test('pushes every robot chat through the main notification flow', async (t) => 
   };
 
   const result = await notifyRobotChat({
-    user: { visitorId: 'visitor-lark-test-2', name: 'Buyer Two', userName: 'buyer2' },
+    user: { visitorId: 'visitor-lark-test-2', name: 'Buyer Two', account: 'buyer2' },
     message: 'What is the MOQ?',
     matchedKeyword: 'moq',
     timestamp: '2026-09-04T01:00:00.000Z',
@@ -135,7 +135,7 @@ test('pushes robot chat contact details as a High intent card', async (t) => {
   };
 
   const result = await notifyRobotChat({
-    user: { visitorId: 'visitor-lark-test-3', name: 'Buyer Three', userName: 'buyer3' },
+    user: { visitorId: 'visitor-lark-test-3', name: 'Buyer Three', account: 'buyer3' },
     message: 'Email me at buyer3@example.com',
     timestamp: '2026-09-04T01:30:00.000Z',
   });

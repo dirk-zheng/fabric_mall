@@ -16,12 +16,11 @@ async function migrate() {
   const quotes = readJson(path.join(dataDir, 'quotes.json'), []);
   const support = readJson(path.join(dataDir, 'support-conversations.json'), { conversations: [], messages: [] });
   for (const user of users) {
-    const userName = String(user.userName || user.username || '').trim().toLowerCase();
-    if (!userName) continue;
-    const visitorId = user.visitorId || `legacy-${crypto.createHash('sha256').update(userName).digest('hex').slice(0, 57)}`;
-    const migrated = { ...user, visitorId, userName };
+    const account = String(user.account || '').trim().toLowerCase();
+    if (!account) continue;
+    const visitorId = user.visitorId || `legacy-${crypto.createHash('sha256').update(account).digest('hex').slice(0, 57)}`;
+    const migrated = { ...user, visitorId, account };
     delete migrated.id;
-    delete migrated.username;
     delete migrated.userId;
     await db.upsert('users', visitorId, migrated);
   }

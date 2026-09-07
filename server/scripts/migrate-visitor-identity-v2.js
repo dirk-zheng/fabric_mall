@@ -122,14 +122,14 @@ async function migrate() {
       CREATE TABLE users_identity_v2 (
         visitor_id VARCHAR(64) NOT NULL,
         user_data JSON NOT NULL,
-        user_name VARCHAR(255) GENERATED ALWAYS AS
-          (LOWER(JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.userName')))) STORED,
+        account VARCHAR(255) GENERATED ALWAYS AS
+          (LOWER(JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.account')))) STORED,
         role VARCHAR(32) GENERATED ALWAYS AS
           (JSON_UNQUOTE(JSON_EXTRACT(user_data, '$.role'))) STORED,
         created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
         updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
         PRIMARY KEY (visitor_id),
-        KEY idx_users_user_name (user_name),
+        KEY idx_users_account (account),
         KEY idx_users_role (role)
       ) ENGINE=InnoDB
     `);
@@ -139,34 +139,34 @@ async function migrate() {
         INSERT INTO users_identity_v2 (visitor_id, user_data, created_at, updated_at)
         SELECT v.visitor_id,
                JSON_MERGE_PATCH(
-                 JSON_REMOVE(COALESCE(u.user_data, JSON_OBJECT()), '$.id', '$.username', '$.userId'),
+                 JSON_REMOVE(COALESCE(u.user_data, JSON_OBJECT()), '$.id', '$.userId'),
                  COALESCE(v.visitor_data, JSON_OBJECT()),
-                 JSON_OBJECT('visitorId', v.visitor_id, 'userName', LOWER(v.user_name))
+                 JSON_OBJECT('visitorId', v.visitor_id, 'account', LOWER(v.account))
                ),
                v.created_at, v.updated_at
           FROM visitor_users v
-          LEFT JOIN users u ON u.user_name = v.user_name
-         WHERE CHAR_LENGTH(v.visitor_id) <= 64 AND v.user_name IS NOT NULL
+          LEFT JOIN users u ON u.account = v.account
+         WHERE CHAR_LENGTH(v.visitor_id) <= 64 AND v.account IS NOT NULL
       `);
     }
 
-    if (await columnExists(connection, 'users', 'user_name')) {
+    if (await columnExists(connection, 'users', 'account')) {
       await connection.query(`
         INSERT INTO users_identity_v2 (visitor_id, user_data, created_at, updated_at)
-        SELECT CONCAT('legacy-', LEFT(SHA2(u.user_name, 256), 57)),
+        SELECT CONCAT('legacy-', LEFT(SHA2(u.account, 256), 57)),
                JSON_MERGE_PATCH(
-                 JSON_REMOVE(u.user_data, '$.id', '$.username', '$.userId'),
+                 JSON_REMOVE(u.user_data, '$.id', '$.userId'),
                  JSON_OBJECT(
-                   'visitorId', CONCAT('legacy-', LEFT(SHA2(u.user_name, 256), 57)),
-                   'userName', LOWER(u.user_name)
+                   'visitorId', CONCAT('legacy-', LEFT(SHA2(u.account, 256), 57)),
+                   'account', LOWER(u.account)
                  )
                ),
                u.created_at, u.updated_at
           FROM users u
-         WHERE NOT EXISTS (SELECT 1 FROM users_identity_v2 n WHERE n.user_name = LOWER(u.user_name))
+         WHERE NOT EXISTS (SELECT 1 FROM users_identity_v2 n WHERE n.account = LOWER(u.account))
       `);
     } else {
-      throw new Error('Unsupported users schema: expected user_name or visitor_id');
+      throw new Error('Unsupported users schema: expected account or visitor_id');
     }
 
     await connection.query(`RENAME TABLE users TO users_identity_source_${suffix}, users_identity_v2 TO users`);
@@ -181,11 +181,11 @@ async function migrate() {
         CONSTRAINT fk_user_profiles_visitor_v2 FOREIGN KEY (visitor_id) REFERENCES users (visitor_id) ON DELETE CASCADE
       ) ENGINE=InnoDB
     `);
-    if (await tableExists(connection, 'user_profiles') && await columnExists(connection, 'user_profiles', 'user_name')) {
+    if (await tableExists(connection, 'user_profiles') && await columnExists(connection, 'user_profiles', 'account')) {
       await connection.query(`
         INSERT INTO user_profiles_identity_v2 (visitor_id, profile_data, updated_at)
         SELECT u.visitor_id, p.profile_data, p.updated_at
-          FROM user_profiles p JOIN users u ON u.user_name = LOWER(p.user_name)
+          FROM user_profiles p JOIN users u ON u.account = LOWER(p.account)
       `);
       await connection.query(`RENAME TABLE user_profiles TO user_profiles_identity_source_${suffix}, user_profiles_identity_v2 TO user_profiles`);
     } else {

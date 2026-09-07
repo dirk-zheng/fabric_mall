@@ -10,7 +10,7 @@ const { GUEST_MESSAGE_LIMIT, getGuestChatUsage } = require('./services/guestChat
 const supportConversations = require('./services/supportConversations');
 const db = require('./database');
 const {
-  accountRows, assertVisitorAvailable, bindVisitor, findAccount, listAccounts, normalizeUserName,
+  accountRows, assertVisitorAvailable, bindVisitor, findAccount, listAccounts, normalizeAccount,
   normalizeVisitorId, safeAccount, updateAccountRole,
 } = require('./services/identity');
 
@@ -74,22 +74,22 @@ function saveVisitorRfqAssortment(visitorId) {
 
 // ─── In-Memory IM Store ──────────────────────────
 const imRooms = {};      // roomId → { roomId, members[], memberNames{}, lastMessage, updatedAt }
-const imMessages = {};   // roomId → [ { id, roomId, senderUserName, senderName, content, timestamp } ]
-const clientMap = new Map(); // userName → Set<WebSocket>
+const imMessages = {};   // roomId → [ { id, roomId, senderAccount, senderName, content, timestamp } ]
+const clientMap = new Map(); // account → Set<WebSocket>
 const visitorClientMap = new Map(); // visitorId → Set<WebSocket>
 const guestChatCounts = new Map(); // visitorId → accepted anonymous message count
 
 //获取或创建两个用户之间的即时通信房间
 function getOrCreateRoom(userA, userB) {
-  const userNames = [userA.userName, userB.userName].sort();
+  const accounts = [userA.account, userB.account].sort();
   const roomId = `chat_${uuidv4()}`;
-  const existingRoom = Object.values(imRooms).find((room) => userNames.every((userName) => room.members.includes(userName)));
+  const existingRoom = Object.values(imRooms).find((room) => accounts.every((account) => room.members.includes(account)));
   if (existingRoom) return existingRoom;
   if (!imRooms[roomId]) {
     imRooms[roomId] = {
       roomId,
-      members: userNames,
-      memberNames: { [userA.userName]: userA.name || userA.userName, [userB.userName]: userB.name || userB.userName },
+      members: accounts,
+      memberNames: { [userA.account]: userA.name || userA.account, [userB.account]: userB.name || userB.account },
       lastMessage: '',
       updatedAt: new Date().toISOString()
     };
@@ -101,23 +101,23 @@ function getOrCreateRoom(userA, userB) {
 }
 
 //登记指定用户的WebSocket客户端连接
-function addClient(userName, ws) {
-  if (!clientMap.has(userName)) clientMap.set(userName, new Set());
-  clientMap.get(userName).add(ws);
+function addClient(account, ws) {
+  if (!clientMap.has(account)) clientMap.set(account, new Set());
+  clientMap.get(account).add(ws);
 }
 
 //移除指定用户的WebSocket客户端连接
-function removeClient(userName, ws) {
-  const set = clientMap.get(userName);
+function removeClient(account, ws) {
+  const set = clientMap.get(account);
   if (set) {
     set.delete(ws);
-    if (set.size === 0) clientMap.delete(userName);
+    if (set.size === 0) clientMap.delete(account);
   }
 }
 
 //向指定用户的全部在线连接推送消息
-function sendToUser(userName, data) {
-  const set = clientMap.get(userName);
+function sendToUser(account, data) {
+  const set = clientMap.get(account);
   if (set) {
     const payload = JSON.stringify(data);
     //向用户的每个有效WebSocket连接发送数据
@@ -249,77 +249,77 @@ function checkAuth(ws) {
 // Auth
 //处理WebSocket用户登录并更新连接身份
 async function handleLogin(payload, ws) {
-  const userName = normalizeUserName(payload?.userName);
+  const account = normalizeAccount(payload?.account);
   const { password } = payload || {};
   const visitorId = normalizeVisitorId(ws.visitorId);
-  if (!userName || !password) throw new Error('user_name and password are required');
+  if (!account || !password) throw new Error('account and password are required');
 
-  await db.refreshUsersByName(userName);
-  const user = findAccount(userName);
-  if (!user) throw new Error('Invalid user_name or password');
+  await db.refreshUsersByAccount(account);
+  const user = findAccount(account);
+  if (!user) throw new Error('Invalid account or password');
 
   const match = await bcrypt.compare(password, user.password);
-  if (!match) throw new Error('Invalid user_name or password');
+  if (!match) throw new Error('Invalid account or password');
 
   const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
   await supportConversations.linkVisitorToUser(visitorId, boundUser);
   const token = generateToken(boundUser);
 
   // Update this connection's auth
-  if (ws.userName) removeClient(ws.userName, ws);
+  if (ws.account) removeClient(ws.account, ws);
   ws.user = safeAccount(boundUser);
-  ws.userName = boundUser.userName;
+  ws.account = boundUser.account;
   ws.visitorId = visitorId;
-  addClient(boundUser.userName, ws);
-  await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', data: { channel: 'websocket', userName } });
-  const behavior = await db.listUserBehavior(userName);
+  addClient(boundUser.account, ws);
+  await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', data: { channel: 'websocket', account } });
+  const behavior = await db.listUserBehavior(account);
 
   return { user: safeAccount(boundUser), token, behavior };
 }
 
 //处理WebSocket用户注册并更新连接身份
 async function handleRegister(payload, ws) {
-  const userName = normalizeUserName(payload?.userName);
+  const account = normalizeAccount(payload?.account);
   const { password, name, quoteReference } = payload || {};
   const visitorId = normalizeVisitorId(ws.visitorId);
-  if (!userName || !password) throw new Error('user_name and password are required');
+  if (!account || !password) throw new Error('account and password are required');
   if (typeof password !== 'string' || password.length < 6) throw new Error('Password must be at least 6 characters');
 
-  await db.refreshUsersByName(userName);
-  if (findAccount(userName)) throw new Error('An account already uses this user_name');
-  assertVisitorAvailable(userName, visitorId);
+  await db.refreshUsersByAccount(account);
+  if (findAccount(account)) throw new Error('This account is already registered');
+  assertVisitorAvailable(account, visitorId);
 
   const hashed = await bcrypt.hash(password, 10);
   const newUser = {
     visitorId,
-    userName,
+    account,
     password: hashed,
     role: 'user',
-    name: name || userName,
+    name: name || account,
     createdAt: new Date().toISOString(),
   };
   await db.upsert('users', visitorId, newUser);
   await supportConversations.linkVisitorToUser(visitorId, newUser);
 
-  if (quoteReference && userName.includes('@')) {
+  if (quoteReference && account.includes('@')) {
     const quotes = readQuotes();
-    const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === userName);
+    const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === account);
     if (quote) {
       quote.visitorId = visitorId;
-      quote.userName = userName;
+      quote.account = account;
       quote.accountLinkedAt = new Date().toISOString();
       await writeQuotes(quotes);
     }
   }
 
   const token = generateToken(newUser);
-  if (ws.userName) removeClient(ws.userName, ws);
+  if (ws.account) removeClient(ws.account, ws);
   ws.user = safeAccount(newUser);
-  ws.userName = userName;
+  ws.account = account;
   ws.visitorId = visitorId;
-  addClient(userName, ws);
-  await db.recordUserEvent({ visitorId, eventType: 'auth.registered', data: { channel: 'websocket', userName } });
-  const behavior = await db.listUserBehavior(userName);
+  addClient(account, ws);
+  await db.recordUserEvent({ visitorId, eventType: 'auth.registered', data: { channel: 'websocket', account } });
+  const behavior = await db.listUserBehavior(account);
 
   return { user: safeAccount(newUser), token, behavior };
 }
@@ -327,7 +327,7 @@ async function handleRegister(payload, ws) {
 //返回当前WebSocket连接的用户信息
 async function handleMe(payload, ws) {
   checkAuth(ws);
-  return { user: ws.user, behavior: await db.listUserBehavior(ws.user.userName) };
+  return { user: ws.user, behavior: await db.listUserBehavior(ws.user.account) };
 }
 
 // Products
@@ -547,11 +547,11 @@ async function handleQuoteSubmit(payload, ws) {
     status: 'new',
     customer: {
       visitorId: ws.visitorId,
-      userName: ws.user.userName,
-      name: ws.user.name || ws.user.userName
+      account: ws.user.account,
+      name: ws.user.name || ws.user.account
     },
     visitorId: ws.visitorId,
-    userName: ws.user.userName,
+    account: ws.user.account,
     market: market.trim(),
     targetCustomerProfile: targetCustomerProfile.trim(),
     specifications: specifications.trim(),
@@ -637,7 +637,7 @@ async function handleSupportChat(payload, ws) {
       data: { messageNumber: guestMessageCount },
     }).catch((error) => console.error('Guest chat event recording failed:', error.message));
   }
-  const notificationUser = ws.user || { visitorId, name: 'Anonymous visitor', userName: 'guest' };
+  const notificationUser = ws.user || { visitorId, name: 'Anonymous visitor', account: 'guest' };
   void notifyRobotChat({ user: notificationUser, message: userMessage, matchedKeyword: result.matchedKeyword, timestamp });
   return {
     userMessage,
@@ -661,14 +661,14 @@ function supportStaffUsers() {
 }
 
 function pushSupportEvent(conversation, type, data) {
-  const recipients = new Set([conversation.customerUserName]);
+  const recipients = new Set([conversation.customerAccount]);
   supportStaffUsers().forEach((staff) => {
-    if (staff.role === 'admin' || staff.userName === conversation.assignedTo || conversation.status === 'waiting_human') {
-      recipients.add(staff.userName);
+    if (staff.role === 'admin' || staff.account === conversation.assignedTo || conversation.status === 'waiting_human') {
+      recipients.add(staff.account);
     }
   });
-  recipients.forEach((userName) => sendToUser(userName, { type, success: true, data }));
-  if (conversation.customerVisitorId && conversation.customerUserName?.startsWith('visitor:')) {
+  recipients.forEach((account) => sendToUser(account, { type, success: true, data }));
+  if (conversation.customerVisitorId && conversation.customerAccount?.startsWith('visitor:')) {
     sendToVisitor(conversation.customerVisitorId, { type, success: true, data });
   }
 }
@@ -679,20 +679,20 @@ function pushSupportUpdate(conversation, messages = []) {
 }
 
 function requireConversationCustomer(conversation, ws) {
-  if (conversation.customerUserName !== supportCustomer(ws).userName) throw new Error('Access denied');
+  if (conversation.customerAccount !== supportCustomer(ws).account) throw new Error('Access denied');
 }
 
 function supportCustomer(ws) {
   return ws.user || {
     visitorId: ws.visitorId,
-    userName: `visitor:${ws.visitorId}`,
+    account: `visitor:${ws.visitorId}`,
     name: `Guest ${ws.visitorId.slice(-6)}`,
   };
 }
 
 function requireAssignedStaff(conversation, ws) {
   checkStaff(ws);
-  if (ws.user.role !== 'admin' && conversation.assignedTo !== ws.userName) {
+  if (ws.user.role !== 'admin' && conversation.assignedTo !== ws.account) {
     throw new Error('Claim this conversation before replying');
   }
 }
@@ -706,7 +706,7 @@ async function handleSupportConversationGet(payload, ws) {
   if (isStaff(ws.user)) {
     if (!payload?.conversationId) throw new Error('A conversation ID is required');
     const result = supportConversations.getConversation(payload.conversationId);
-    if (ws.user.role !== 'admin' && result.conversation.status !== 'waiting_human' && result.conversation.assignedTo !== ws.userName) {
+    if (ws.user.role !== 'admin' && result.conversation.status !== 'waiting_human' && result.conversation.assignedTo !== ws.account) {
       throw new Error('Access denied');
     }
     return result;
@@ -723,7 +723,7 @@ async function handleSupportConversationGet(payload, ws) {
       conversation.claimedBy = null;
       conversation.resolvedAt = null;
       createdMessages.push(appendMessage({
-        senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+        senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
         content: 'You have been added to the sales queue. A fabric specialist will join this conversation shortly.',
       }));
     });
@@ -771,7 +771,7 @@ async function handleSupportMessageSend(payload, ws) {
 
     const message = appendMessage({
       senderType: isStaff(ws.user) ? (ws.user.role === 'admin' ? 'admin' : 'seller') : 'customer',
-      senderUserName: supportCustomer(ws).userName,
+      senderAccount: supportCustomer(ws).account,
       senderName: supportCustomer(ws).name,
       content,
     });
@@ -783,13 +783,13 @@ async function handleSupportMessageSend(payload, ws) {
         conversation.botEnabled = false;
         conversation.priority = 'high';
         createdMessages.push(appendMessage({
-          senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+          senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
           content: 'Your request has been added to our sales queue. A team member will join this conversation shortly.',
         }));
       } else {
         const result = getAIResponse(content);
         createdMessages.push(appendMessage({
-          senderType: 'bot', senderUserName: 'bot', senderName: 'Kora · AI Assistant', content: result.reply,
+          senderType: 'bot', senderAccount: 'bot', senderName: 'Kora · AI Assistant', content: result.reply,
         }));
         void notifyRobotChat({ user: supportCustomer(ws), message: content, matchedKeyword: result.matchedKeyword, timestamp: message.createdAt });
       }
@@ -834,7 +834,7 @@ async function handleSupportHandoffRequest(payload, ws) {
     conversation.claimedBy = null;
     conversation.resolvedAt = null;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
       content: 'A sales representative has been requested. Please keep this window open; your conversation history will be shared with the team.',
     }));
   });
@@ -847,26 +847,26 @@ function handleSupportQueueList(payload, ws) {
   checkStaff(ws);
   const all = supportConversations.listConversations();
   if (ws.user.role === 'admin') return all.filter((item) => item.status !== 'closed');
-  return all.filter((item) => item.status === 'waiting_human' || item.assignedTo === ws.userName);
+  return all.filter((item) => item.status === 'waiting_human' || item.assignedTo === ws.account);
 }
 
 async function handleSupportClaim(payload, ws) {
   checkAuth(ws);
   checkStaff(ws);
   const current = supportConversations.getConversation(payload?.conversationId).conversation;
-  if (current.assignedTo && current.assignedTo !== ws.userName && ws.user.role !== 'admin') {
+  if (current.assignedTo && current.assignedTo !== ws.account && ws.user.role !== 'admin') {
     throw new Error(`Conversation is already assigned to ${current.assignedName || 'another representative'}`);
   }
   const createdMessages = [];
   const updated = await supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
-    conversation.assignedTo = ws.userName;
-    conversation.assignedName = ws.user.name || ws.user.userName;
-    conversation.claimedBy = ws.userName;
+    conversation.assignedTo = ws.account;
+    conversation.assignedName = ws.user.name || ws.user.account;
+    conversation.claimedBy = ws.account;
     conversation.resolvedAt = null;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
       content: `${conversation.assignedName} has joined the conversation as your ${ws.user.role === 'admin' ? 'support administrator' : 'sales representative'}.`,
     }));
   });
@@ -877,17 +877,17 @@ async function handleSupportClaim(payload, ws) {
 async function handleSupportTransfer(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
-  const target = readUsers().find((user) => user.userName === payload?.toUserName && isStaff(user));
+  const target = readUsers().find((user) => user.account === payload?.toAccount && isStaff(user));
   if (!target) throw new Error('Sales or administrator account not found');
   const createdMessages = [];
   const updated = await supportConversations.updateConversation(payload?.conversationId, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
-    conversation.assignedTo = target.userName;
-    conversation.assignedName = target.name || target.userName;
-    conversation.claimedBy = ws.userName;
+    conversation.assignedTo = target.account;
+    conversation.assignedName = target.name || target.account;
+    conversation.claimedBy = ws.account;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
       content: `This conversation has been transferred to ${conversation.assignedName}.`,
     }));
   });
@@ -905,7 +905,7 @@ async function handleSupportResolve(payload, ws) {
     conversation.botEnabled = false;
     conversation.resolvedAt = new Date().toISOString();
     createdMessages.push(appendMessage({
-      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderAccount: 'system', senderName: 'Curva Fabric Support',
       content: 'This conversation has been marked as resolved. Send another message whenever you need further assistance.',
     }));
   });
@@ -916,7 +916,7 @@ async function handleSupportResolve(payload, ws) {
 function handleSupportStaffList(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
-  return supportStaffUsers().map((user) => ({ userName: user.userName, name: user.name || user.userName, role: user.role }));
+  return supportStaffUsers().map((user) => ({ account: user.account, name: user.name || user.account, role: user.role }));
 }
 
 //返回WebSocket客服常见问题列表
@@ -946,21 +946,21 @@ async function handleAdminUpdateUserRole(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
 
-  const userName = normalizeUserName(payload?.userName);
+  const account = normalizeAccount(payload?.account);
   const role = String(payload?.role || '').trim();
   if (!['user', 'seller'].includes(role)) {
     throw new Error('Role must be user or seller');
   }
 
-  await db.refreshUsersByName(userName);
-  const target = findAccount(userName);
+  await db.refreshUsersByAccount(account);
+  const target = findAccount(account);
   if (!target) throw new Error('User not found');
   if (target.role === 'admin') throw new Error('Admin accounts cannot be changed here');
 
-  const updated = await updateAccountRole(userName, role);
+  const updated = await updateAccountRole(account, role);
 
-  const safeUser = safeAccount({ ...updated, visitorIds: listAccounts().find((item) => item.userName === userName)?.visitorIds || [] });
-  const connections = clientMap.get(userName);
+  const safeUser = safeAccount({ ...updated, visitorIds: listAccounts().find((item) => item.account === account)?.visitorIds || [] });
+  const connections = clientMap.get(account);
   connections?.forEach((client) => {
     client.user = { ...client.user, role };
     const token = generateToken(client.user);
@@ -1012,7 +1012,7 @@ function handleAdminArticleCreate(payload, ws) {
     id: uuidv4(), title, slug, summary, content, category,
     image: String(payload?.image || '').trim().slice(0, 500), status,
     readTime: `${estimatedMinutes} min read`,
-    authorUserName: ws.userName, authorName: ws.user.name || ws.user.userName,
+    authorAccount: ws.account, authorName: ws.user.name || ws.user.account,
     publishedAt: status === 'published' ? now : null,
     createdAt: now, updatedAt: now,
   };
@@ -1054,7 +1054,7 @@ function handleAdminFaqCreate(payload, ws) {
   const allowedStatuses = ['draft', 'review', 'published'];
   const status = allowedStatuses.includes(payload?.status) ? payload.status : 'draft';
   const now = new Date().toISOString();
-  const faq = { id: uuidv4(), question, answer, category, status, authorUserName: ws.userName, createdAt: now, updatedAt: now };
+  const faq = { id: uuidv4(), question, answer, category, status, authorAccount: ws.account, createdAt: now, updatedAt: now };
   const faqs = readList(FAQS_FILE);
   faqs.push(faq);
   writeList(FAQS_FILE, faqs);
@@ -1084,28 +1084,28 @@ function handleGetSales() {
     //逐项判断用户是否拥有销售员角色
     .filter(u => u.role === 'seller')
     //将销售账号转换为前端安全字段
-    .map(u => ({ userName: u.userName, name: u.name, role: u.role }));
+    .map(u => ({ account: u.account, name: u.name, role: u.role }));
 }
 
 //返回当前用户参与的即时通信房间列表
 function handleGetIMRooms(payload, ws) {
   checkAuth(ws);
-  const userName = ws.userName;
+  const account = ws.account;
   const allUsers = readUsers();
 
   const rooms = [];
   for (const roomId of Object.keys(imRooms)) {
     const room = imRooms[roomId];
-    if (room.members.includes(userName)) {
+    if (room.members.includes(account)) {
       //查找即时通信房间中的另一位成员
-      const otherUserName = room.members.find(member => member !== userName);
+      const otherAccount = room.members.find(member => member !== account);
       //根据成员ID查找用户信息
-      const otherUser = allUsers.find(u => u.userName === otherUserName);
+      const otherUser = allUsers.find(u => u.account === otherAccount);
       rooms.push({
         roomId: room.roomId,
         otherUser: otherUser
-          ? { userName: otherUser.userName, name: otherUser.name, role: otherUser.role }
-          : { userName: otherUserName, name: room.memberNames[otherUserName] || 'Unknown' },
+          ? { account: otherUser.account, name: otherUser.name, role: otherUser.role }
+          : { account: otherAccount, name: room.memberNames[otherAccount] || 'Unknown' },
         lastMessage: room.lastMessage,
         updatedAt: room.updatedAt
       });
@@ -1123,7 +1123,7 @@ function handleGetIMMessages(payload, ws) {
   checkAuth(ws);
   const { roomId } = payload || {};
   if (!roomId || !imRooms[roomId]) throw new Error('Conversation not found');
-  if (!imRooms[roomId].members.includes(ws.userName)) throw new Error('Access denied');
+  if (!imRooms[roomId].members.includes(ws.account)) throw new Error('Access denied');
 
   return (imMessages[roomId] || []).slice(-100); // Last 100 messages
 }
@@ -1131,31 +1131,31 @@ function handleGetIMMessages(payload, ws) {
 //创建即时通信房间或发送聊天消息
 async function handleIMSend(payload, ws) {
   checkAuth(ws);
-  let { roomId, toUserName, content } = payload || {};
+  let { roomId, toAccount, content } = payload || {};
   content = String(content || '').trim();
   if (!content) throw new Error('Message cannot be empty');
   if (content.length > 3000) throw new Error('Message must be 3000 characters or fewer');
 
-  // Create room if toUserName provided and roomId doesn't exist
-  if (!roomId && toUserName) {
+  // Create room if toAccount provided and roomId doesn't exist
+  if (!roomId && toAccount) {
     const allUsers = readUsers();
     //根据接收者ID查找目标用户
-    const targetUser = allUsers.find(u => u.userName === normalizeUserName(toUserName));
+    const targetUser = allUsers.find(u => u.account === normalizeAccount(toAccount));
     if (!targetUser) throw new Error('Recipient not found');
 
-    const senderUser = { userName: ws.userName, name: ws.user.name || ws.user.userName };
+    const senderUser = { account: ws.account, name: ws.user.name || ws.user.account };
     const room = getOrCreateRoom(senderUser, targetUser);
     roomId = room.roomId;
   }
 
   if (!roomId || !imRooms[roomId]) throw new Error('Conversation not found');
-  if (!imRooms[roomId].members.includes(ws.userName)) throw new Error('Access denied');
+  if (!imRooms[roomId].members.includes(ws.account)) throw new Error('Access denied');
 
   const msg = {
     id: uuidv4(),
     roomId,
-    senderUserName: ws.userName,
-    senderName: ws.user.name || ws.user.userName,
+    senderAccount: ws.account,
+    senderName: ws.user.name || ws.user.account,
     content,
     timestamp: new Date().toISOString()
   };
@@ -1170,9 +1170,9 @@ async function handleIMSend(payload, ws) {
   // Forward to all room members EXCEPT sender
   const pushMsg = { type: 'im.message', success: true, data: msg };
   //将新消息推送给房间内除发送者外的成员
-  imRooms[roomId].members.forEach(memberUserName => {
-    if (memberUserName !== ws.userName) {
-      sendToUser(memberUserName, pushMsg);
+  imRooms[roomId].members.forEach((memberAccount) => {
+    if (memberAccount !== ws.account) {
+      sendToUser(memberAccount, pushMsg);
     }
   });
 
@@ -1248,7 +1248,7 @@ function createWSServer(server) {
   wss.on('connection', (ws, req) => {
     ws.__alive = true;
     ws.user = null;
-    ws.userName = null;
+    ws.account = null;
     ws.visitorId = uuidv4();
     ws.guestChatId = ws.visitorId;
 
@@ -1261,14 +1261,14 @@ function createWSServer(server) {
       const token = url.searchParams.get('token');
       if (token) {
         const decoded = jwt.verify(token, JWT_SECRET);
-        const storedUser = findAccount(decoded.userName);
+        const storedUser = findAccount(decoded.account);
         const visitorIsLinked = storedUser && decoded.visitorId === ws.visitorId
-          && accountRows(decoded.userName).some((row) => row.visitorId === ws.visitorId);
+          && accountRows(decoded.account).some((row) => row.visitorId === ws.visitorId);
         if (visitorIsLinked) {
-          const visitorAccount = accountRows(decoded.userName).find((row) => row.visitorId === ws.visitorId);
+          const visitorAccount = accountRows(decoded.account).find((row) => row.visitorId === ws.visitorId);
           ws.user = safeAccount(visitorAccount);
-          ws.userName = storedUser.userName;
-          addClient(storedUser.userName, ws);
+          ws.account = storedUser.account;
+          addClient(storedUser.account, ws);
         }
       }
     } catch (e) { /* invalid/expired token, continue unauthenticated */ }
@@ -1279,7 +1279,7 @@ function createWSServer(server) {
 
     //在连接关闭时移除用户在线客户端记录
     ws.on('close', () => {
-      if (ws.userName) removeClient(ws.userName, ws);
+      if (ws.account) removeClient(ws.account, ws);
       removeVisitorClient(ws.visitorId, ws);
     });
 

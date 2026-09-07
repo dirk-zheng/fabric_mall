@@ -10,18 +10,18 @@ USE `curva_fabric_b2b`;
 CREATE TABLE IF NOT EXISTS `users` (
   `visitor_id` VARCHAR(64) NOT NULL,
   `user_data` JSON NOT NULL,
-  `user_name` VARCHAR(255) GENERATED ALWAYS AS
-    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.userName')))) STORED,
+  `account` VARCHAR(255) GENERATED ALWAYS AS
+    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.account')))) STORED,
   `role` VARCHAR(32) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.role'))) STORED,
   `created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`visitor_id`),
-  KEY `idx_users_user_name` (`user_name`),
+  KEY `idx_users_account` (`account`),
   KEY `idx_users_role` (`role`),
   CONSTRAINT `chk_users_visitor_id` CHECK (`visitor_id` REGEXP '^[A-Za-z0-9-]{16,64}$'),
-  CONSTRAINT `chk_users_json_identity` CHECK (
-    `user_name` IS NOT NULL AND CHAR_LENGTH(`user_name`) BETWEEN 1 AND 255
+  CONSTRAINT `chk_users_account_identity` CHECK (
+    `account` IS NOT NULL AND CHAR_LENGTH(`account`) BETWEEN 1 AND 255
     AND JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.visitorId')) IS NOT NULL
     AND JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.visitorId')) = `visitor_id`
   )
@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS `quotes` (
     (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.reference'))) STORED,
   `visitor_id` VARCHAR(64) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.visitorId'))) STORED,
-  `user_name` VARCHAR(255) GENERATED ALWAYS AS
-    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.userName')))) STORED,
+  `account` VARCHAR(255) GENERATED ALWAYS AS
+    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.account')))) STORED,
   `status` VARCHAR(32) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.status'))) STORED,
   `created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS `quotes` (
   PRIMARY KEY (`quote_id`),
   UNIQUE KEY `uq_quotes_reference` (`reference`),
   KEY `idx_quotes_visitor` (`visitor_id`),
-  KEY `idx_quotes_user_name` (`user_name`),
+  KEY `idx_quotes_account` (`account`),
   KEY `idx_quotes_status` (`status`)
 ) ENGINE=InnoDB;
 

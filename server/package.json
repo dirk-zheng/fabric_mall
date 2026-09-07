@@ -11,6 +11,7 @@
     "db:install": "node scripts/install-schema.js",
     "db:migrate-users": "node scripts/migrate-user-json-to-mysql.js",
     "db:migrate-visitor-identity": "node scripts/migrate-visitor-identity-v2.js",
+    "db:migrate-account": "node scripts/migrate-account-field.js",
     "db:enforce-contracts": "node scripts/enforce-database-contracts.js"
   },
   "dependencies": {

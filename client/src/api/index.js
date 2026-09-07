@@ -10,16 +10,16 @@ import { getOrCreateVisitorId } from '../visitorIdentity';
 // ─── 认证 API ─────────────────────────────────────
 
 export const authAPI = {
-  login: (userName, password) =>
+  login: (account, password) =>
     {
            //处理回调函数逻辑
-           return wsClient.send('auth.login', { userName, password, visitorId: getOrCreateVisitorId() });
+           return wsClient.send('auth.login', { account, password, visitorId: getOrCreateVisitorId() });
          },
 
-  register: (userName, password, name, quoteReference = '') =>
+  register: (account, password, name, quoteReference = '') =>
     {
               //处理回调函数逻辑
-              return wsClient.send('auth.register', { userName, password, name, quoteReference, visitorId: getOrCreateVisitorId() });
+              return wsClient.send('auth.register', { account, password, name, quoteReference, visitorId: getOrCreateVisitorId() });
             },
 
   getMe: () =>
@@ -143,8 +143,8 @@ export const supportAPI = {
   claimConversation: (conversationId) =>
     wsClient.send('support.conversation.claim', { conversationId }),
 
-  transferConversation: (conversationId, toUserName) =>
-    wsClient.send('support.conversation.transfer', { conversationId, toUserName }),
+  transferConversation: (conversationId, toAccount) =>
+    wsClient.send('support.conversation.transfer', { conversationId, toAccount }),
 
   resolveConversation: (conversationId) =>
     wsClient.send('support.conversation.resolve', { conversationId }),
@@ -174,10 +174,10 @@ export const imAPI = {
                  return wsClient.send('im.messages', { roomId });
                },
 
-  sendMessage: (content, roomId, toUserName) =>
+  sendMessage: (content, roomId, toAccount) =>
     {
                  //处理回调函数逻辑
-                 return wsClient.send('im.send', { roomId, toUserName, content });
+                 return wsClient.send('im.send', { roomId, toAccount, content });
                },
 };
 
@@ -188,8 +188,8 @@ export const adminAPI = {
               //处理回调函数逻辑
               return wsClient.send('admin.users');
             },
-  updateUserRole: (userName, role) => {
-                    return wsClient.send('admin.users.update-role', { userName, role });
+  updateUserRole: (account, role) => {
+                    return wsClient.send('admin.users.update-role', { account, role });
                   },
   getArticles: () => {
                  //处理回调函数逻辑

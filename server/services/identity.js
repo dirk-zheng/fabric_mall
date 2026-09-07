@@ -1,13 +1,13 @@
 const db = require('../database');
 
-function normalizeUserName(value) {
-  const userName = String(value || '').trim().toLowerCase();
-  if (userName.length > 255) {
-    const error = new Error('user_name must be 255 characters or fewer');
+function normalizeAccount(value) {
+  const account = String(value || '').trim().toLowerCase();
+  if (account.length > 255) {
+    const error = new Error('account must be 255 characters or fewer');
     error.code = 'VALIDATION_ERROR';
     throw error;
   }
-  return userName;
+  return account;
 }
 
 function normalizeVisitorId(value) {
@@ -20,60 +20,59 @@ function normalizeVisitorId(value) {
   return visitorId;
 }
 
-function assertVisitorAvailable(userName, visitorId) {
-  const normalizedUserName = normalizeUserName(userName);
+function assertVisitorAvailable(account, visitorId) {
+  const normalizedAccount = normalizeAccount(account);
   const normalizedVisitorId = normalizeVisitorId(visitorId);
   const current = db.get('users', normalizedVisitorId);
-  if (current && normalizeUserName(current.userName) !== normalizedUserName) {
-    const error = new Error('This visitor is already linked to another user_name');
+  if (current && normalizeAccount(current.account) !== normalizedAccount) {
+    const error = new Error('This visitor is already linked to another account');
     error.code = 'VISITOR_ALREADY_LINKED';
     throw error;
   }
 }
 
-function accountRows(userName) {
-  const normalizedName = normalizeUserName(userName);
-  return db.list('users').filter((user) => normalizeUserName(user.userName) === normalizedName);
+function accountRows(account) {
+  const normalizedAccount = normalizeAccount(account);
+  return db.list('users').filter((user) => normalizeAccount(user.account) === normalizedAccount);
 }
 
-function findAccount(userName) {
-  return accountRows(userName).sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))[0] || null;
+function findAccount(account) {
+  return accountRows(account).sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))[0] || null;
 }
 
 function listAccounts() {
   const accounts = new Map();
   db.list('users').forEach((user) => {
-    const userName = normalizeUserName(user.userName);
-    if (!userName) return;
-    const current = accounts.get(userName);
-    if (!current || new Date(user.updatedAt || 0) >= new Date(current.updatedAt || 0)) accounts.set(userName, user);
+    const account = normalizeAccount(user.account);
+    if (!account) return;
+    const current = accounts.get(account);
+    if (!current || new Date(user.updatedAt || 0) >= new Date(current.updatedAt || 0)) accounts.set(account, user);
   });
   return [...accounts.values()].map((account) => ({
     ...account,
-    visitorIds: accountRows(account.userName).map((row) => row.visitorId),
+    visitorIds: accountRows(account.account).map((row) => row.visitorId),
   }));
 }
 
 async function bindVisitor(account, visitorId, updates = {}) {
   const normalizedVisitorId = normalizeVisitorId(visitorId);
-  assertVisitorAvailable(account.userName, normalizedVisitorId);
+  assertVisitorAvailable(account.account, normalizedVisitorId);
   const now = new Date().toISOString();
   const record = {
     ...account,
     ...updates,
     visitorId: normalizedVisitorId,
-    userName: normalizeUserName(account.userName),
+    account: normalizeAccount(account.account),
     updatedAt: now,
   };
   delete record.id;
-  delete record.username;
   delete record.visitorIds;
   await db.upsert('users', normalizedVisitorId, record);
   return record;
 }
 
-async function updateAccountRole(userName, role) {
-  const rows = accountRows(userName);
+async function updateAccountRole(account, role) {
+  const rows = accountRows(account);
   if (!rows.length) throw new Error('Account not found');
   const updated = [];
   for (const row of rows) updated.push(await bindVisitor(row, row.visitorId, { role }));
@@ -92,7 +91,7 @@ module.exports = {
   bindVisitor,
   findAccount,
   listAccounts,
-  normalizeUserName,
+  normalizeAccount,
   normalizeVisitorId,
   safeAccount,
   updateAccountRole,

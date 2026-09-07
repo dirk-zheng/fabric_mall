@@ -7,7 +7,7 @@ import { Eye, EyeOff, Lock, User, ArrowRight, Loader2, Sparkles, Shield, Users, 
 export default function Login() {
   const location = useLocation();
   const [isLogin, setIsLogin] = useState(() => new URLSearchParams(location.search).get('mode') !== 'register');
-  const [userName, setUserName] = useState('');
+  const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -28,9 +28,9 @@ export default function Login() {
 
     try {
       if (isLogin) {
-        await login(userName, password);
+        await login(account, password);
       } else {
-        await register(userName, password, name);
+        await register(account, password, name);
       }
       navigate(from, { replace: true });
     } catch (err) {
@@ -142,20 +142,20 @@ export default function Login() {
                 </div>
               )}
 
-              {/* User name */}
+              {/* Account */}
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-dark-700">
-                  User name or email
+                  Account or email
                 </label>
                 <div className="relative">
                   <input
                     type="text"
-                    value={userName}
+                    value={account}
                     onChange={(e) => {
                                 //处理页面交互事件
-                                return setUserName(e.target.value);
+                                return setAccount(e.target.value);
                               }}
-                    placeholder="Enter user name or email"
+                    placeholder="Enter account or email"
                     required
                     className="w-full px-4 py-3 pl-11 rounded-xl border border-dark-200 focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all bg-white"
                   />

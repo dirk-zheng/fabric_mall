@@ -55,10 +55,10 @@ export function AuthProvider({ children }) {
   }, []);
 
   // 登录函数
-  const login = async (userName, password) => {
+  const login = async (account, password) => {
                   //处理回调函数逻辑
 
-    const res = await authAPI.login(userName, password);
+    const res = await authAPI.login(account, password);
     const userData = { ...res.user, token: res.token };
     setUser(userData);
     setBehavior(res.behavior);
@@ -68,10 +68,10 @@ export function AuthProvider({ children }) {
   };
 
   // 注册函数
-  const register = async (userName, password, name, quoteReference = '') => {
+  const register = async (account, password, name, quoteReference = '') => {
                      //处理回调函数逻辑
 
-    const res = await authAPI.register(userName, password, name, quoteReference);
+    const res = await authAPI.register(account, password, name, quoteReference);
     const userData = { ...res.user, token: res.token };
     setUser(userData);
     setBehavior(res.behavior);

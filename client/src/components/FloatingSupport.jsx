@@ -43,11 +43,11 @@ function formatTime(value) {
   return new Date(value).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
-function MessageBubble({ message, customerUserName }) {
+function MessageBubble({ message, customerAccount }) {
   if (message.senderType === 'system') {
     return <div className="flex justify-center"><p className="max-w-[90%] rounded-full bg-slate-100 px-3 py-1.5 text-center text-xs text-slate-500">{message.content}</p></div>;
   }
-  const isCustomer = message.senderType === 'customer' || message.senderUserName === customerUserName;
+  const isCustomer = message.senderType === 'customer' || message.senderAccount === customerAccount;
   const isBot = message.senderType === 'bot';
   return (
     <div className={`flex gap-2 ${isCustomer ? 'flex-row-reverse' : ''}`}>
@@ -87,7 +87,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
       setConversation(result.conversation);
       setMessages(result.messages || []);
     }).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
-  }, [isOpen, user?.userName, user?.token]);
+  }, [isOpen, user?.account, user?.token]);
 
   useEffect(() => {
     const offMessage = wsClient.on('support.message.created', (message) => {
@@ -164,7 +164,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
             {waiting && <span className="text-xs text-amber-700">A representative will join here</span>}
           </div>
           <div className="flex-1 space-y-3 overflow-y-auto bg-gradient-to-b from-white to-blue-50/30 p-4">
-            {messages.map((message) => <MessageBubble key={message.id} message={message} customerUserName={user?.userName || 'guest'} />)}
+            {messages.map((message) => <MessageBubble key={message.id} message={message} customerAccount={user?.account || 'guest'} />)}
             {sending && <div className="flex items-center gap-2 text-xs text-slate-400"><Loader2 size={13} className="animate-spin" />Sending…</div>}
             <div ref={endRef} />
           </div>
