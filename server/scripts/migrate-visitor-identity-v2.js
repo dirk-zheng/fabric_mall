@@ -1,7 +1,7 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
 
-const database = process.env.DB_NAME || 'curva_denim_b2b';
+const database = process.env.DB_NAME || 'curva_fabric_b2b';
 const suffix = '20260904';
 
 async function tableExists(connection, tableName) {

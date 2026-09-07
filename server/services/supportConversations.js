@@ -22,12 +22,12 @@ function readStore() {
   };
 }
 
-function persist(store) {
+async function persist(store) {
   const writes = [
-    ...store.conversations.map((item) => db.upsert('supportConversations', item.id, item)),
-    ...store.messages.map((item) => db.upsert('supportConversationMessages', item.id, item, item.conversationId)),
+    ...store.conversations.map((item) => ({ name: 'supportConversations', key: item.id, value: item })),
+    ...store.messages.map((item) => ({ name: 'supportConversationMessages', key: item.id, value: item, extraValue: item.conversationId })),
   ];
-  void Promise.all(writes).catch((error) => console.error('Support persistence failed:', error.message));
+  await db.batchUpsert(writes);
 }
 
 function listMessages(store, conversationId) {
@@ -52,7 +52,7 @@ function appendMessageToStore(store, conversation, input) {
   return message;
 }
 
-function createConversation(customer) {
+async function createConversation(customer) {
   const store = readStore();
   let conversation = store.conversations
     .filter((item) => item.customerUserName === customer.userName && item.status !== 'closed')
@@ -72,17 +72,17 @@ function createConversation(customer) {
     senderType: 'bot', senderUserName: 'bot', senderName: 'Kora · AI Assistant',
     content: 'Hello, we’re working hard to find a human support agent for you…',
   });
-  persist(store);
+  await persist(store);
   return { conversation: { ...conversation }, messages: listMessages(store, conversation.id) };
 }
 
-function updateConversation(conversationId, updater) {
+async function updateConversation(conversationId, updater) {
   const store = readStore();
   const conversation = store.conversations.find((item) => item.id === conversationId);
   if (!conversation) throw new Error('Conversation not found');
   const result = updater({ store, conversation, appendMessage: (message) => appendMessageToStore(store, conversation, message) });
   conversation.updatedAt = new Date().toISOString();
-  persist(store);
+  await persist(store);
   return { conversation: { ...conversation }, result };
 }
 
@@ -93,9 +93,9 @@ function getConversation(conversationId) {
   return { conversation: { ...conversation }, messages: listMessages(store, conversationId) };
 }
 
-function getCustomerConversation(customer) { return createConversation(customer); }
+async function getCustomerConversation(customer) { return createConversation(customer); }
 
-function linkVisitorToUser(visitorId, customer) {
+async function linkVisitorToUser(visitorId, customer) {
   const store = readStore();
   const guestUserName = `visitor:${visitorId}`;
   let changed = false;
@@ -112,7 +112,7 @@ function linkVisitorToUser(visitorId, customer) {
     message.senderName = customer.name || customer.userName;
     changed = true;
   });
-  if (changed) persist(store);
+  if (changed) await persist(store);
 }
 
 function listConversations() {

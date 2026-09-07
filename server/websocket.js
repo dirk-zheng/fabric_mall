@@ -254,6 +254,7 @@ async function handleLogin(payload, ws) {
   const visitorId = normalizeVisitorId(ws.visitorId);
   if (!userName || !password) throw new Error('user_name and password are required');
 
+  await db.refreshUsersByName(userName);
   const user = findAccount(userName);
   if (!user) throw new Error('Invalid user_name or password');
 
@@ -261,7 +262,7 @@ async function handleLogin(payload, ws) {
   if (!match) throw new Error('Invalid user_name or password');
 
   const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
-  supportConversations.linkVisitorToUser(visitorId, boundUser);
+  await supportConversations.linkVisitorToUser(visitorId, boundUser);
   const token = generateToken(boundUser);
 
   // Update this connection's auth
@@ -284,6 +285,7 @@ async function handleRegister(payload, ws) {
   if (!userName || !password) throw new Error('user_name and password are required');
   if (typeof password !== 'string' || password.length < 6) throw new Error('Password must be at least 6 characters');
 
+  await db.refreshUsersByName(userName);
   if (findAccount(userName)) throw new Error('An account already uses this user_name');
   assertVisitorAvailable(userName, visitorId);
 
@@ -297,7 +299,7 @@ async function handleRegister(payload, ws) {
     createdAt: new Date().toISOString(),
   };
   await db.upsert('users', visitorId, newUser);
-  supportConversations.linkVisitorToUser(visitorId, newUser);
+  await supportConversations.linkVisitorToUser(visitorId, newUser);
 
   if (quoteReference && userName.includes('@')) {
     const quotes = readQuotes();
@@ -584,12 +586,11 @@ async function handleQuoteSubmit(payload, ws) {
 // Support
 //处理客服聊天消息并返回匹配回复
 async function handleSupportChat(payload, ws) {
-  const { message } = payload || {};
-  if (!message || !message.trim()) throw new Error('Message cannot be empty');
-
-  const userMessage = message.trim();
+  const userMessage = String(payload?.message || '').trim();
+  if (!userMessage) throw new Error('Message cannot be empty');
+  if (userMessage.length > 3000) throw new Error('Message must be 3000 characters or fewer');
   const suppliedVisitorId = String(payload?.visitorId || '').trim();
-  const visitorId = /^[a-zA-Z0-9-]{16,100}$/.test(suppliedVisitorId) ? suppliedVisitorId : ws.guestChatId;
+  const visitorId = suppliedVisitorId ? normalizeVisitorId(suppliedVisitorId) : normalizeVisitorId(ws.guestChatId);
   let guestMessageCount = null;
 
   if (!ws.user) {
@@ -711,10 +712,10 @@ async function handleSupportConversationGet(payload, ws) {
     return result;
   }
 
-  const current = supportConversations.getCustomerConversation(supportCustomer(ws)).conversation;
+  const current = (await supportConversations.getCustomerConversation(supportCustomer(ws))).conversation;
   if (current.status === 'bot_active' || current.status === 'resolved') {
     const createdMessages = [];
-    const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
+    const updated = await supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
       conversation.status = 'waiting_human';
       conversation.botEnabled = false;
       conversation.assignedTo = null;
@@ -749,7 +750,7 @@ async function handleSupportMessageSend(payload, ws) {
   }
 
   let conversationId = payload?.conversationId;
-  if (!isStaff(ws.user)) conversationId = supportConversations.getCustomerConversation(supportCustomer(ws)).conversation.id;
+  if (!isStaff(ws.user)) conversationId = (await supportConversations.getCustomerConversation(supportCustomer(ws))).conversation.id;
   if (!conversationId) throw new Error('Conversation ID is required');
 
   const current = supportConversations.getConversation(conversationId).conversation;
@@ -757,7 +758,7 @@ async function handleSupportMessageSend(payload, ws) {
   else requireConversationCustomer(current, ws);
 
   const createdMessages = [];
-  const updated = supportConversations.updateConversation(conversationId, ({ conversation, appendMessage }) => {
+  const updated = await supportConversations.updateConversation(conversationId, ({ conversation, appendMessage }) => {
     if (conversation.status === 'closed') throw new Error('Conversation is closed');
     if (!isStaff(ws.user) && conversation.status === 'resolved') {
       conversation.status = 'bot_active';
@@ -818,12 +819,12 @@ async function handleSupportMessageSend(payload, ws) {
   };
 }
 
-function handleSupportHandoffRequest(payload, ws) {
+async function handleSupportHandoffRequest(payload, ws) {
   checkAuth(ws);
   if (isStaff(ws.user)) throw new Error('Only customers can request a sales representative');
-  const current = supportConversations.getCustomerConversation(ws.user).conversation;
+  const current = (await supportConversations.getCustomerConversation(ws.user)).conversation;
   const createdMessages = [];
-  const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
+  const updated = await supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
     if (conversation.status === 'human_active' || conversation.status === 'waiting_human') return;
     conversation.status = 'waiting_human';
     conversation.botEnabled = false;
@@ -849,7 +850,7 @@ function handleSupportQueueList(payload, ws) {
   return all.filter((item) => item.status === 'waiting_human' || item.assignedTo === ws.userName);
 }
 
-function handleSupportClaim(payload, ws) {
+async function handleSupportClaim(payload, ws) {
   checkAuth(ws);
   checkStaff(ws);
   const current = supportConversations.getConversation(payload?.conversationId).conversation;
@@ -857,7 +858,7 @@ function handleSupportClaim(payload, ws) {
     throw new Error(`Conversation is already assigned to ${current.assignedName || 'another representative'}`);
   }
   const createdMessages = [];
-  const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
+  const updated = await supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
     conversation.assignedTo = ws.userName;
@@ -873,13 +874,13 @@ function handleSupportClaim(payload, ws) {
   return { conversation: updated.conversation, messages: createdMessages };
 }
 
-function handleSupportTransfer(payload, ws) {
+async function handleSupportTransfer(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
   const target = readUsers().find((user) => user.userName === payload?.toUserName && isStaff(user));
   if (!target) throw new Error('Sales or administrator account not found');
   const createdMessages = [];
-  const updated = supportConversations.updateConversation(payload?.conversationId, ({ conversation, appendMessage }) => {
+  const updated = await supportConversations.updateConversation(payload?.conversationId, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
     conversation.assignedTo = target.userName;
@@ -894,12 +895,12 @@ function handleSupportTransfer(payload, ws) {
   return { conversation: updated.conversation, messages: createdMessages };
 }
 
-function handleSupportResolve(payload, ws) {
+async function handleSupportResolve(payload, ws) {
   checkAuth(ws);
   const current = supportConversations.getConversation(payload?.conversationId).conversation;
   requireAssignedStaff(current, ws);
   const createdMessages = [];
-  const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
+  const updated = await supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
     conversation.status = 'resolved';
     conversation.botEnabled = false;
     conversation.resolvedAt = new Date().toISOString();
@@ -932,9 +933,10 @@ function handleSupportFAQ() {
 
 // ─── Admin workspace ────────────────────────────
 //校验管理员权限并返回脱敏用户列表
-function handleAdminUsers(payload, ws) {
+async function handleAdminUsers(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
+  await db.refresh('users');
   //移除用户密码后返回安全用户数据
   return readUsers().map(({ password, ...user }) => user);
 }
@@ -950,6 +952,7 @@ async function handleAdminUpdateUserRole(payload, ws) {
     throw new Error('Role must be user or seller');
   }
 
+  await db.refreshUsersByName(userName);
   const target = findAccount(userName);
   if (!target) throw new Error('User not found');
   if (target.role === 'admin') throw new Error('Admin accounts cannot be changed here');
@@ -1129,7 +1132,9 @@ function handleGetIMMessages(payload, ws) {
 async function handleIMSend(payload, ws) {
   checkAuth(ws);
   let { roomId, toUserName, content } = payload || {};
-  if (!content || !content.trim()) throw new Error('Message cannot be empty');
+  content = String(content || '').trim();
+  if (!content) throw new Error('Message cannot be empty');
+  if (content.length > 3000) throw new Error('Message must be 3000 characters or fewer');
 
   // Create room if toUserName provided and roomId doesn't exist
   if (!roomId && toUserName) {
@@ -1151,12 +1156,12 @@ async function handleIMSend(payload, ws) {
     roomId,
     senderUserName: ws.userName,
     senderName: ws.user.name || ws.user.userName,
-    content: content.trim(),
+    content,
     timestamp: new Date().toISOString()
   };
 
   imMessages[roomId].push(msg);
-  imRooms[roomId].lastMessage = content.trim().slice(0, 50);
+  imRooms[roomId].lastMessage = content.slice(0, 50);
   imRooms[roomId].updatedAt = msg.timestamp;
   await db.upsert('imRooms', roomId, imRooms[roomId]);
   await db.upsert('imMessages', msg.id, msg, roomId);

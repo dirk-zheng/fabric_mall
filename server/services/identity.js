@@ -1,12 +1,22 @@
 const db = require('../database');
 
 function normalizeUserName(value) {
-  return String(value || '').trim().toLowerCase();
+  const userName = String(value || '').trim().toLowerCase();
+  if (userName.length > 255) {
+    const error = new Error('user_name must be 255 characters or fewer');
+    error.code = 'VALIDATION_ERROR';
+    throw error;
+  }
+  return userName;
 }
 
 function normalizeVisitorId(value) {
   const visitorId = String(value || '').trim();
-  if (!/^[a-zA-Z0-9-]{16,64}$/.test(visitorId)) throw new Error('A valid visitorId is required');
+  if (!/^[a-zA-Z0-9-]{16,64}$/.test(visitorId)) {
+    const error = new Error('A valid visitorId is required');
+    error.code = 'VALIDATION_ERROR';
+    throw error;
+  }
   return visitorId;
 }
 

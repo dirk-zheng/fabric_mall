@@ -10,7 +10,8 @@
     "seed": "node seed.js",
     "db:install": "node scripts/install-schema.js",
     "db:migrate-users": "node scripts/migrate-user-json-to-mysql.js",
-    "db:migrate-visitor-identity": "node scripts/migrate-visitor-identity-v2.js"
+    "db:migrate-visitor-identity": "node scripts/migrate-visitor-identity-v2.js",
+    "db:enforce-contracts": "node scripts/enforce-database-contracts.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

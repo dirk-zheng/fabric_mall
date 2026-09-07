@@ -22,6 +22,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ code: 400, message: 'user_name and password are required' });
     }
 
+    await db.refreshUsersByName(userName);
     const user = findAccount(userName);
 
     if (!user) {
@@ -36,7 +37,7 @@ router.post('/login', async (req, res) => {
     }
 
     const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
-    supportConversations.linkVisitorToUser(visitorId, boundUser);
+    await supportConversations.linkVisitorToUser(visitorId, boundUser);
     const token = generateToken(boundUser);
     await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
     const behavior = await db.listUserBehavior(userName);
@@ -52,7 +53,7 @@ router.post('/login', async (req, res) => {
     });
   } catch (err) {
     if (err.code === 'VISITOR_ALREADY_LINKED') return res.status(409).json({ code: 409, message: err.message });
-    if (/visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
+    if (err.code === 'VALIDATION_ERROR' || /visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
     res.status(500).json({ code: 500, message: 'Internal server error' });
   }
 });
@@ -73,6 +74,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ code: 400, message: 'Password must be at least 6 characters' });
     }
 
+    await db.refreshUsersByName(userName);
     if (findAccount(userName)) {
       return res.status(409).json({ code: 409, message: 'An account already uses this user_name' });
     }
@@ -90,7 +92,7 @@ router.post('/register', async (req, res) => {
     };
 
     await db.upsert('users', visitorId, newUser);
-    supportConversations.linkVisitorToUser(visitorId, newUser);
+    await supportConversations.linkVisitorToUser(visitorId, newUser);
 
     if (quoteReference && userName.includes('@')) {
       const quotes = db.list('quotes');
@@ -118,7 +120,7 @@ router.post('/register', async (req, res) => {
     });
   } catch (err) {
     if (err.code === 'VISITOR_ALREADY_LINKED') return res.status(409).json({ code: 409, message: err.message });
-    if (/visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
+    if (err.code === 'VALIDATION_ERROR' || /visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
     res.status(500).json({ code: 500, message: 'Internal server error' });
   }
 });

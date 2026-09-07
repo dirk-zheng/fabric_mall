@@ -27,7 +27,7 @@ function config() {
     port: Number(process.env.DB_PORT || 3306),
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME || 'curva_denim_b2b',
+    database: process.env.DB_NAME || 'curva_fabric_b2b',
     connectionLimit: Number(process.env.DB_POOL_SIZE || 10),
     charset: 'utf8mb4',
   };
@@ -46,19 +46,49 @@ function assertStore(name) {
   if (!TABLES[name]) throw new Error(`Unknown database store: ${name}`);
 }
 
+function assertRecordContract(name, recordKey, value, extraValue) {
+  if (!recordKey || recordKey.length > 64) throw new Error(`${name} key must be 1 to 64 characters.`);
+  const identityFields = {
+    users: 'visitorId', rfqAssortments: 'visitorId', quotes: 'id', imRooms: 'roomId',
+    imMessages: 'id', supportConversations: 'id', supportConversationMessages: 'id',
+  };
+  const identityField = identityFields[name];
+  if (identityField && value?.[identityField] != null && String(value[identityField]) !== recordKey) {
+    throw new Error(`${name}.${identityField} must match its database key.`);
+  }
+  if (name === 'users') {
+    if (!/^[a-zA-Z0-9-]{16,64}$/.test(recordKey)) throw new Error('A valid visitorId is required.');
+    const userName = String(value?.userName || '').trim();
+    if (!userName || userName.length > 255) throw new Error('user_name must be 1 to 255 characters.');
+  }
+  if (name === 'rfqAssortments' && !/^[a-zA-Z0-9-]{16,64}$/.test(recordKey)) throw new Error('A valid visitorId is required.');
+  if (TABLES[name].extra) {
+    const extra = String(extraValue || value?.[TABLES[name].extra === 'room_id' ? 'roomId' : 'conversationId'] || '');
+    if (!extra || extra.length > 64) throw new Error(`${TABLES[name].extra} must be 1 to 64 characters.`);
+  }
+}
+
 async function initializeDatabase() {
   if (ready) return;
   if (!process.env.DB_USER) throw new Error('DB_USER is required for the user-data database.');
   mysql = require('mysql2/promise');
   pool = mysql.createPool(config());
-  await pool.query('SELECT 1');
-  for (const [name, definition] of Object.entries(TABLES)) {
-    const [rows] = await pool.query(`SELECT \`${definition.key}\` AS record_key, \`${definition.data}\` AS record_data FROM \`${definition.table}\``);
-    cache[name].clear();
-    rows.forEach((row) => cache[name].set(String(row.record_key), parseJson(row.record_data)));
+  try {
+    await pool.query('SELECT 1');
+    const loaded = {};
+    for (const [name, definition] of Object.entries(TABLES)) {
+      const [rows] = await pool.query(`SELECT \`${definition.key}\` AS record_key, \`${definition.data}\` AS record_data FROM \`${definition.table}\``);
+      loaded[name] = new Map(rows.map((row) => [String(row.record_key), parseJson(row.record_data)]));
+    }
+    Object.entries(loaded).forEach(([name, records]) => { cache[name] = records; });
+    ready = true;
+    lastError = null;
+  } catch (error) {
+    lastError = error;
+    await pool.end().catch(() => {});
+    pool = null;
+    throw error;
   }
-  ready = true;
-  lastError = null;
 }
 
 function list(name) {
@@ -71,11 +101,11 @@ function get(name, key) {
   return clone(cache[name].get(String(key)));
 }
 
-async function upsert(name, key, value, extraValue) {
+function buildUpsert(name, key, value, extraValue) {
   assertStore(name);
   const definition = TABLES[name];
   const recordKey = String(key);
-  cache[name].set(recordKey, clone(value));
+  assertRecordContract(name, recordKey, value, extraValue);
   const columns = [`\`${definition.key}\``, `\`${definition.data}\``];
   const values = [recordKey, JSON.stringify(value)];
   if (definition.extra) {
@@ -83,17 +113,64 @@ async function upsert(name, key, value, extraValue) {
     values.splice(1, 0, String(extraValue || value[definition.extra === 'room_id' ? 'roomId' : 'conversationId'] || ''));
   }
   const placeholders = columns.map(() => '?').join(', ');
-  await pool.query(
-    `INSERT INTO \`${definition.table}\` (${columns.join(', ')}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE \`${definition.data}\` = VALUES(\`${definition.data}\`)`,
-    values
-  );
+  const updateColumns = [`\`${definition.data}\` = VALUES(\`${definition.data}\`)`];
+  if (definition.extra) updateColumns.push(`\`${definition.extra}\` = VALUES(\`${definition.extra}\`)`);
+  return {
+    name,
+    recordKey,
+    value,
+    sql: `INSERT INTO \`${definition.table}\` (${columns.join(', ')}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updateColumns.join(', ')}`,
+    values,
+  };
+}
+
+async function upsert(name, key, value, extraValue) {
+  const operation = buildUpsert(name, key, value, extraValue);
+  await pool.query(operation.sql, operation.values);
+  cache[name].set(operation.recordKey, clone(value));
+}
+
+async function batchUpsert(operations) {
+  const prepared = operations.map((operation) => buildUpsert(operation.name, operation.key, operation.value, operation.extraValue));
+  if (!prepared.length) return;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    for (const operation of prepared) await connection.query(operation.sql, operation.values);
+    await connection.commit();
+    prepared.forEach((operation) => cache[operation.name].set(operation.recordKey, clone(operation.value)));
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 async function remove(name, key) {
   assertStore(name);
   const definition = TABLES[name];
-  cache[name].delete(String(key));
-  await pool.query(`DELETE FROM \`${definition.table}\` WHERE \`${definition.key}\` = ?`, [String(key)]);
+  const recordKey = String(key);
+  await pool.query(`DELETE FROM \`${definition.table}\` WHERE \`${definition.key}\` = ?`, [recordKey]);
+  cache[name].delete(recordKey);
+}
+
+async function refresh(name) {
+  assertStore(name);
+  const definition = TABLES[name];
+  const [rows] = await pool.query(`SELECT \`${definition.key}\` AS record_key, \`${definition.data}\` AS record_data FROM \`${definition.table}\``);
+  cache[name] = new Map(rows.map((row) => [String(row.record_key), parseJson(row.record_data)]));
+  return list(name);
+}
+
+async function refreshUsersByName(userName) {
+  const normalizedName = String(userName || '').trim().toLowerCase();
+  const [rows] = await pool.query('SELECT visitor_id AS record_key, user_data AS record_data FROM users WHERE user_name = ?', [normalizedName]);
+  for (const [key, user] of cache.users.entries()) {
+    if (String(user.userName || '').trim().toLowerCase() === normalizedName) cache.users.delete(key);
+  }
+  rows.forEach((row) => cache.users.set(String(row.record_key), parseJson(row.record_data)));
+  return rows.map((row) => clone(parseJson(row.record_data)));
 }
 
 async function replaceAll(name, records, keyField = 'id') {
@@ -126,25 +203,34 @@ async function replaceAll(name, records, keyField = 'id') {
 async function recordUserEvent(input = {}) {
   if (!pool) return;
   const visitorId = String(input.visitorId || '').trim();
-  if (!visitorId) throw new Error('visitorId is required when recording a user event.');
-  const eventId = input.id || uuidv4();
+  if (!/^[a-zA-Z0-9-]{16,64}$/.test(visitorId)) throw new Error('A valid visitorId is required when recording a user event.');
+  const eventId = String(input.id || uuidv4()).trim();
+  const eventType = String(input.eventType || '').trim();
+  if (!eventId || eventId.length > 64) throw new Error('eventId must be 1 to 64 characters.');
+  if (!eventType || eventType.length > 100) throw new Error('eventType must be 1 to 100 characters.');
+  const pagePath = input.pagePath == null ? null : String(input.pagePath);
+  const entityType = input.entityType == null ? null : String(input.entityType);
+  const entityId = input.entityId == null ? null : String(input.entityId);
+  if (pagePath?.length > 500) throw new Error('pagePath must be 500 characters or fewer.');
+  if (entityType?.length > 64) throw new Error('entityType must be 64 characters or fewer.');
+  if (entityId?.length > 128) throw new Error('entityId must be 128 characters or fewer.');
   const ipHash = input.ip
     ? crypto.createHash('sha256').update(`${process.env.EVENT_HASH_SALT || ''}:${input.ip}`).digest('hex')
     : null;
   await pool.query(
     `INSERT INTO user_events (visitor_id, event_id, event_type, page_path, entity_type, entity_id, event_data, ip_hash, user_agent, occurred_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [visitorId, eventId, input.eventType, input.pagePath || null,
-      input.entityType || null, input.entityId || null, JSON.stringify(input.data || {}), ipHash,
+    [visitorId, eventId, eventType, pagePath,
+      entityType, entityId, JSON.stringify(input.data || {}), ipHash,
       String(input.userAgent || '').slice(0, 500) || null, input.occurredAt ? new Date(input.occurredAt) : new Date()]
   );
 }
 
 async function listUserBehavior(userName) {
   const normalizedName = String(userName || '').trim().toLowerCase();
-  const visitorIds = list('users')
-    .filter((user) => String(user.userName || '').toLowerCase() === normalizedName)
-    .map((user) => user.visitorId);
+  if (!normalizedName || !pool) return { visitorIds: [], events: [] };
+  const [userRows] = await pool.query('SELECT visitor_id AS visitorId FROM users WHERE user_name = ?', [normalizedName]);
+  const visitorIds = userRows.map((row) => row.visitorId);
   if (!visitorIds.length || !pool) return { visitorIds, events: [] };
   const placeholders = visitorIds.map(() => '?').join(', ');
   const [rows] = await pool.query(
@@ -163,6 +249,7 @@ function getDatabaseStatus() {
   return {
     connected: ready,
     engine: 'mysql',
+    database: config().database,
     scope: 'user-data-only',
     error: lastError ? lastError.message : null,
   };
@@ -193,4 +280,4 @@ async function installSchema() {
   }
 }
 
-module.exports = { initializeDatabase, installSchema, list, get, upsert, remove, replaceAll, recordUserEvent, listUserBehavior, getDatabaseStatus, closeDatabase };
+module.exports = { initializeDatabase, installSchema, list, get, upsert, batchUpsert, remove, replaceAll, refresh, refreshUsersByName, recordUserEvent, listUserBehavior, getDatabaseStatus, closeDatabase };
