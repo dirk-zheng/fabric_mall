@@ -16,11 +16,12 @@ router.post('/public', async (req, res) => {
   try {
     if (req.body.website) return res.status(200).json({ code: 200, data: { reference: 'RECEIVED' } });
 
+    const visitorId = clean(req.body.visitorId || req.get('x-visitor-id'), 64);
     const name = clean(req.body.name, 100);
     const company = clean(req.body.company, 150);
     const country = clean(req.body.country, 100);
     const email = clean(req.body.email, 200).toLowerCase();
-    if (!name || !company || !country || !email) return res.status(400).json({ code: 400, message: 'Name, company, country and email are required.' });
+    if (!visitorId || !name || !company || !country || !email) return res.status(400).json({ code: 400, message: 'Visitor ID, name, company, country and email are required.' });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ code: 400, message: 'Enter a valid business email.' });
 
     const clientKey = `${req.ip}:${email}`;
@@ -32,7 +33,7 @@ router.post('/public', async (req, res) => {
     const now = new Date();
     const reference = `WEB-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${uuidv4().slice(0, 6).toUpperCase()}`;
     const quote = {
-      id: uuidv4(), reference, status: 'new', source: 'public-website',
+      id: uuidv4(), reference, status: 'new', source: 'public-website', visitorId,
       customer: { name, company, country, email, whatsapp: clean(req.body.whatsapp, 100) },
       buyerProfile: {
         businessType: clean(req.body.businessType, 100),
@@ -50,7 +51,7 @@ router.post('/public', async (req, res) => {
     };
     await db.upsert('quotes', quote.id, quote);
     await db.recordUserEvent({
-      eventType: 'quote.public_submitted', entityType: 'quote', entityId: quote.id,
+      visitorId, eventType: 'quote.public_submitted', entityType: 'quote', entityId: quote.id,
       ip: req.ip, userAgent: req.get('user-agent'), data: { reference, source: quote.source }
     });
     recentSubmissions.set(clientKey, Date.now());

@@ -3,6 +3,7 @@ import { Bot, Clock, Headphones, Loader2, Send, ShieldCheck, UserRound, X } from
 import { Link } from 'react-router-dom';
 import { supportAPI, wsClient } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { getOrCreateVisitorId } from '../visitorIdentity';
 
 const quickQuestions = [
   'What is the typical fabric MOQ?',
@@ -11,30 +12,18 @@ const quickQuestions = [
   'Which technical tests are available?',
 ];
 
-const firstVisitGreeting = 'Hello, we’re working hard to find a human support agent for you…';
 const guestUsageStorageKey = 'curva_guest_chat_usage';
 
 function readGuestUsage() {
   if (typeof window === 'undefined') return { visitorId: '', sentCount: 0, remaining: 10, registrationSuggested: false, limitReached: false };
+  const visitorId = getOrCreateVisitorId();
   try {
     const saved = JSON.parse(localStorage.getItem(guestUsageStorageKey) || '{}');
-    if (saved.visitorId) return saved;
+    if (saved.visitorId === visitorId) return saved;
   } catch { /* replace invalid local data */ }
-  const visitorId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const initial = { visitorId, sentCount: 0, remaining: 10, registrationSuggested: false, limitReached: false };
   localStorage.setItem(guestUsageStorageKey, JSON.stringify(initial));
   return initial;
-}
-
-function localMessage(senderType, content) {
-  return {
-    id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-    senderType,
-    senderId: senderType === 'customer' ? 'guest' : 'bot',
-    senderName: senderType === 'customer' ? 'Guest' : 'Kora · AI Assistant',
-    content,
-    createdAt: new Date().toISOString(),
-  };
 }
 
 const statusCopy = {
@@ -54,11 +43,11 @@ function formatTime(value) {
   return new Date(value).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
-function MessageBubble({ message, customerId }) {
+function MessageBubble({ message, customerUserName }) {
   if (message.senderType === 'system') {
     return <div className="flex justify-center"><p className="max-w-[90%] rounded-full bg-slate-100 px-3 py-1.5 text-center text-xs text-slate-500">{message.content}</p></div>;
   }
-  const isCustomer = message.senderType === 'customer' || message.senderId === customerId;
+  const isCustomer = message.senderType === 'customer' || message.senderUserName === customerUserName;
   const isBot = message.senderType === 'bot';
   return (
     <div className={`flex gap-2 ${isCustomer ? 'flex-row-reverse' : ''}`}>
@@ -91,18 +80,14 @@ export default function FloatingSupport({ isOpen, onClose }) {
   }, []);
 
   useEffect(() => {
-    if (!isOpen || !user?.token) return;
+    if (!isOpen) return;
     setLoading(true);
     setError('');
     supportAPI.getConversation().then((result) => {
       setConversation(result.conversation);
       setMessages(result.messages || []);
     }).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
-  }, [isOpen, user?.id, user?.token]);
-
-  useEffect(() => {
-    if (isOpen && !user?.token && messages.length === 0) setMessages([localMessage('bot', firstVisitGreeting)]);
-  }, [isOpen, user?.token, messages.length]);
+  }, [isOpen, user?.userName, user?.token]);
 
   useEffect(() => {
     const offMessage = wsClient.on('support.message.created', (message) => {
@@ -123,19 +108,23 @@ export default function FloatingSupport({ isOpen, onClose }) {
     setSending(true);
     setError('');
     try {
-      if (user?.token) {
-        applyResult(await supportAPI.sendMessage(content, conversation?.id));
-      } else {
-        const result = await supportAPI.chat(content, guestUsage.visitorId);
+      const result = await supportAPI.sendMessage(content, conversation?.id);
+      if (!user?.token) {
         if (result.guestUsage) {
-          const nextUsage = { visitorId: guestUsage.visitorId, ...result.guestUsage };
+          const sentCount = Math.max(guestUsage.sentCount || 0, result.guestUsage.sentCount || 0);
+          const nextUsage = {
+            visitorId: guestUsage.visitorId,
+            sentCount,
+            remaining: Math.max(0, 10 - sentCount),
+            registrationSuggested: sentCount >= 7,
+            limitReached: sentCount >= 10,
+          };
           setGuestUsage(nextUsage);
           localStorage.setItem(guestUsageStorageKey, JSON.stringify(nextUsage));
         }
         if (result.blocked) return;
-        setMessages((current) => mergeMessages(current, [localMessage('customer', content)]));
-        setMessages((current) => mergeMessages(current, [localMessage('bot', result.aiReply)]));
       }
+      applyResult(result);
     }
     catch (requestError) { setInput(content); setError(requestError.message); }
     finally { setSending(false); }
@@ -175,7 +164,7 @@ export default function FloatingSupport({ isOpen, onClose }) {
             {waiting && <span className="text-xs text-amber-700">A representative will join here</span>}
           </div>
           <div className="flex-1 space-y-3 overflow-y-auto bg-gradient-to-b from-white to-blue-50/30 p-4">
-            {messages.map((message) => <MessageBubble key={message.id} message={message} customerId={user?.id || 'guest'} />)}
+            {messages.map((message) => <MessageBubble key={message.id} message={message} customerUserName={user?.userName || 'guest'} />)}
             {sending && <div className="flex items-center gap-2 text-xs text-slate-400"><Loader2 size={13} className="animate-spin" />Sending…</div>}
             <div ref={endRef} />
           </div>

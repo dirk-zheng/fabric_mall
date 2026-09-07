@@ -25,7 +25,7 @@ export default function SupportWidget() {
               //执行组件副作用逻辑
 
     if (isCustomer) setShowDot(!localStorage.getItem(CLICKED_KEY));
-  }, [isCustomer, user?.id]); // re-check when the visitor or role changes
+  }, [isCustomer, user?.userName]); // re-check when the visitor or role changes
 
   // Sales: listen for incoming IM messages
   useEffect(() => {
@@ -43,7 +43,7 @@ export default function SupportWidget() {
                            //处理回调函数逻辑
 
           const next = new Set(prev);
-          next.add(data.senderId);
+          next.add(data.senderUserName);
           return next;
         });
       }

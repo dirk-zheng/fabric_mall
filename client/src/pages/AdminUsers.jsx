@@ -22,7 +22,7 @@ export default function AdminUsers({ manageRoles = false }) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
-  const [savingUserId, setSavingUserId] = useState('');
+  const [savingUserName, setSavingUserName] = useState('');
 
   const loadUsers = useCallback(async () => {
     setError('');
@@ -41,22 +41,22 @@ export default function AdminUsers({ manageRoles = false }) {
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
-    return users.filter((user) => !value || `${user.name} ${user.username} ${user.role} ${user.id}`.toLowerCase().includes(value));
+    return users.filter((user) => !value || `${user.name} ${user.userName} ${user.role} ${(user.visitorIds || []).join(' ')}`.toLowerCase().includes(value));
   }, [users, query]);
 
   const updateRole = async (user, role) => {
     if (user.role === role || user.role === 'admin') return;
-    setSavingUserId(user.id);
+    setSavingUserName(user.userName);
     setError('');
     setMessage('');
     try {
-      const updated = await adminAPI.updateUserRole(user.id, role);
-      setUsers((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setMessage(`${updated.name || updated.username} is now ${roleLabels[updated.role]}.`);
+      const updated = await adminAPI.updateUserRole(user.userName, role);
+      setUsers((current) => current.map((item) => item.userName === updated.userName ? updated : item));
+      setMessage(`${updated.name || updated.userName} is now ${roleLabels[updated.role]}.`);
     } catch (err) {
       setError(err.message || 'Unable to update this member role.');
     } finally {
-      setSavingUserId('');
+      setSavingUserName('');
     }
   };
 
@@ -81,7 +81,7 @@ export default function AdminUsers({ manageRoles = false }) {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search name, username, role or ID"
+            placeholder="Search name, user name, role or visitor ID"
             className="w-full rounded-xl border-slate-300 py-3 pl-11"
           />
         </label>
@@ -98,22 +98,22 @@ export default function AdminUsers({ manageRoles = false }) {
               <thead className="bg-slate-50 text-left text-sm text-slate-500">
                 <tr>
                   <th className="p-4">Member</th>
-                  <th className="p-4">Username</th>
+                  <th className="p-4">User name</th>
                   <th className="p-4">Role</th>
                   {manageRoles && <th className="p-4">Set role</th>}
-                  <th className="p-4">ID</th>
+                  <th className="p-4">Visitor IDs</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((user) => (
-                  <tr key={user.id} className="border-t border-slate-100">
+                  <tr key={user.userName} className="border-t border-slate-100">
                     <td className="p-4">
                       <span className="flex items-center gap-3 font-semibold text-slate-900">
                         <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-50 text-primary"><UserRound size={18} /></span>
                         {user.name}
                       </span>
                     </td>
-                    <td className="p-4 text-slate-600">{user.username}</td>
+                    <td className="p-4 text-slate-600">{user.userName}</td>
                     <td className="p-4">
                       <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold ${roleStyles[user.role] || roleStyles.user}`}>
                         <ShieldCheck size={13} />{roleLabels[user.role] || user.role}
@@ -126,10 +126,10 @@ export default function AdminUsers({ manageRoles = false }) {
                         ) : (
                           <select
                             value={user.role}
-                            disabled={savingUserId === user.id}
+                            disabled={savingUserName === user.userName}
                             onChange={(event) => updateRole(user, event.target.value)}
                             className="rounded-xl border-slate-300 py-2 text-sm disabled:opacity-50"
-                            aria-label={`Set role for ${user.name || user.username}`}
+                            aria-label={`Set role for ${user.name || user.userName}`}
                           >
                             <option value="user">User</option>
                             <option value="seller">Seller</option>
@@ -137,7 +137,7 @@ export default function AdminUsers({ manageRoles = false }) {
                         )}
                       </td>
                     )}
-                    <td className="p-4 font-mono text-xs text-slate-400">{user.id}</td>
+                    <td className="p-4 font-mono text-xs text-slate-400">{(user.visitorIds || [user.visitorId]).filter(Boolean).join(', ')}</td>
                   </tr>
                 ))}
               </tbody>

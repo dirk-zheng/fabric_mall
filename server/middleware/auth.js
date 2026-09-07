@@ -28,7 +28,7 @@ const JWT_SECRET = resolveJwtSecret();
 //生成用户身份认证JWT令牌
 function generateToken(user) {
   return jwt.sign(
-    { id: user.id, username: user.username, role: user.role, name: user.name },
+    { visitorId: user.visitorId, userName: user.userName, role: user.role, name: user.name },
     JWT_SECRET,
     { expiresIn: '7d' }
   );

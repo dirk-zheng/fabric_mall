@@ -80,11 +80,11 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const timestamp = new Date().toISOString();
     const messageId = uuidv4();
     await db.upsert('supportMessages', messageId, {
-      id: messageId, userId: req.user.id, userMessage, aiReply: result.reply,
+      id: messageId, visitorId: req.user.visitorId, userName: req.user.userName, userMessage, aiReply: result.reply,
       matchedKeyword: result.matchedKeyword, createdAt: timestamp,
     });
     await db.recordUserEvent({
-      userId: req.user.id, eventType: 'support.chat_message', entityType: 'support_message',
+      visitorId: req.user.visitorId, eventType: 'support.chat_message', entityType: 'support_message',
       entityId: messageId, ip: req.ip, userAgent: req.get('user-agent')
     });
     void notifyRobotChat({ user: req.user, message: userMessage, matchedKeyword: result.matchedKeyword, timestamp });

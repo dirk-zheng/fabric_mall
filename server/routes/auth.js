@@ -1,55 +1,58 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
-const { generateToken, authenticateToken, requireAdmin } = require('../middleware/auth');
+const { generateToken, authenticateToken } = require('../middleware/auth');
 const db = require('../database');
+const { assertVisitorAvailable, bindVisitor, findAccount, normalizeUserName, normalizeVisitorId, safeAccount } = require('../services/identity');
+const supportConversations = require('../services/supportConversations');
 
 const router = express.Router();
-function readUsers() {
-  return db.list('users').map((user) => (
-    user.role === 'salesperson' ? { ...user, role: 'seller' } : user
-  ));
+function requestVisitorId(req) {
+  return normalizeVisitorId(req.body?.visitorId || req.get('x-visitor-id'));
 }
 
 // POST /api/auth/login
 //处理用户登录并返回用户信息与JWT令牌
 router.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const userName = normalizeUserName(req.body?.userName);
+    const { password } = req.body || {};
+    const visitorId = requestVisitorId(req);
 
-    if (!username || !password) {
-      return res.status(400).json({ code: 400, message: 'Username and password are required' });
+    if (!userName || !password) {
+      return res.status(400).json({ code: 400, message: 'user_name and password are required' });
     }
 
-    const users = readUsers();
-    //根据用户名查找登录用户
-    const loginName = String(username).trim().toLowerCase();
-    const user = users.find(u => String(u.username).toLowerCase() === loginName);
+    const user = findAccount(userName);
 
     if (!user) {
-      await db.recordUserEvent({ eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { username: loginName } });
-      return res.status(401).json({ code: 401, message: 'Invalid username or password' });
+      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
+      return res.status(401).json({ code: 401, message: 'Invalid user_name or password' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      await db.recordUserEvent({ userId: user.id, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent') });
-      return res.status(401).json({ code: 401, message: 'Invalid username or password' });
+      await db.recordUserEvent({ visitorId, eventType: 'auth.login_failed', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
+      return res.status(401).json({ code: 401, message: 'Invalid user_name or password' });
     }
 
-    const token = generateToken(user);
-    const { password: _, ...safeUser } = user;
-    await db.recordUserEvent({ userId: user.id, eventType: 'auth.login_succeeded', ip: req.ip, userAgent: req.get('user-agent') });
+    const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
+    supportConversations.linkVisitorToUser(visitorId, boundUser);
+    const token = generateToken(boundUser);
+    await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
+    const behavior = await db.listUserBehavior(userName);
 
     res.json({
       code: 200,
       message: 'Login successful',
       data: {
-        user: safeUser,
-        token
+        user: safeAccount(boundUser),
+        token,
+        behavior,
       }
     });
   } catch (err) {
+    if (err.code === 'VISITOR_ALREADY_LINKED') return res.status(409).json({ code: 409, message: err.message });
+    if (/visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
     res.status(500).json({ code: 500, message: 'Internal server error' });
   }
 });
@@ -58,69 +61,75 @@ router.post('/login', async (req, res) => {
 //处理新用户注册并生成登录令牌
 router.post('/register', async (req, res) => {
   try {
-    const { username, password, name, quoteReference } = req.body;
+    const userName = normalizeUserName(req.body?.userName);
+    const { password, name, quoteReference } = req.body || {};
+    const visitorId = requestVisitorId(req);
 
-    if (!username || !password) {
-      return res.status(400).json({ code: 400, message: 'Username and password are required' });
+    if (!userName || !password) {
+      return res.status(400).json({ code: 400, message: 'user_name and password are required' });
     }
 
     if (typeof password !== 'string' || password.length < 6) {
       return res.status(400).json({ code: 400, message: 'Password must be at least 6 characters' });
     }
 
-    const users = readUsers();
-    const normalizedUsername = String(username).trim();
-    const accountUsername = normalizedUsername.includes('@') ? normalizedUsername.toLowerCase() : normalizedUsername;
-    
-    //检查注册用户名是否已经存在
-    if (users.some(u => String(u.username).toLowerCase() === accountUsername.toLowerCase())) {
-      return res.status(409).json({ code: 409, message: 'An account already uses this email or username' });
+    if (findAccount(userName)) {
+      return res.status(409).json({ code: 409, message: 'An account already uses this user_name' });
     }
+
+    assertVisitorAvailable(userName, visitorId);
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = {
-      id: uuidv4(),
-      username: accountUsername,
+      visitorId,
+      userName,
       password: hashedPassword,
       role: 'user',
-      name: name || accountUsername
+      name: name || userName,
+      createdAt: new Date().toISOString(),
     };
 
-    await db.upsert('users', newUser.id, newUser);
+    await db.upsert('users', visitorId, newUser);
+    supportConversations.linkVisitorToUser(visitorId, newUser);
 
-    if (quoteReference && accountUsername.includes('@')) {
+    if (quoteReference && userName.includes('@')) {
       const quotes = db.list('quotes');
-      const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === accountUsername);
+      const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === userName);
       if (quote) {
-        quote.userId = newUser.id;
+        quote.visitorId = visitorId;
+        quote.userName = userName;
         quote.accountLinkedAt = new Date().toISOString();
         await db.upsert('quotes', quote.id, quote);
       }
     }
 
     const token = generateToken(newUser);
-    const { password: _, ...safeUser } = newUser;
-    await db.recordUserEvent({ userId: newUser.id, eventType: 'auth.registered', ip: req.ip, userAgent: req.get('user-agent') });
+    await db.recordUserEvent({ visitorId, eventType: 'auth.registered', ip: req.ip, userAgent: req.get('user-agent'), data: { userName } });
+    const behavior = await db.listUserBehavior(userName);
 
     res.status(201).json({
       code: 201,
       message: 'Registration successful',
       data: {
-        user: safeUser,
-        token
+        user: safeAccount(newUser),
+        token,
+        behavior,
       }
     });
   } catch (err) {
+    if (err.code === 'VISITOR_ALREADY_LINKED') return res.status(409).json({ code: 409, message: err.message });
+    if (/visitorId/.test(err.message)) return res.status(400).json({ code: 400, message: err.message });
     res.status(500).json({ code: 500, message: 'Internal server error' });
   }
 });
 
 // GET /api/auth/me
 //返回当前已登录用户信息
-router.get('/me', authenticateToken, (req, res) => {
+router.get('/me', authenticateToken, async (req, res) => {
+  const behavior = await db.listUserBehavior(req.user.userName);
   res.json({
     code: 200,
-    data: req.user
+    data: { user: req.user, behavior }
   });
 });
 

@@ -9,9 +9,9 @@ let ready = false;
 let lastError = null;
 
 const TABLES = {
-  users: { table: 'users', key: 'user_id', data: 'user_data' },
+  users: { table: 'users', key: 'visitor_id', data: 'user_data' },
   quotes: { table: 'quotes', key: 'quote_id', data: 'quote_data' },
-  rfqAssortments: { table: 'rfq_assortments', key: 'user_id', data: 'assortment_data' },
+  rfqAssortments: { table: 'rfq_assortments', key: 'visitor_id', data: 'assortment_data' },
   imRooms: { table: 'im_rooms', key: 'room_id', data: 'room_data' },
   imMessages: { table: 'im_messages', key: 'message_id', data: 'message_data', extra: 'room_id' },
   supportMessages: { table: 'support_messages', key: 'message_id', data: 'message_data' },
@@ -125,17 +125,38 @@ async function replaceAll(name, records, keyField = 'id') {
 
 async function recordUserEvent(input = {}) {
   if (!pool) return;
+  const visitorId = String(input.visitorId || '').trim();
+  if (!visitorId) throw new Error('visitorId is required when recording a user event.');
   const eventId = input.id || uuidv4();
   const ipHash = input.ip
     ? crypto.createHash('sha256').update(`${process.env.EVENT_HASH_SALT || ''}:${input.ip}`).digest('hex')
     : null;
   await pool.query(
-    `INSERT INTO user_events (event_id, user_id, session_id, event_type, page_path, entity_type, entity_id, event_data, ip_hash, user_agent, occurred_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [eventId, input.userId || null, input.sessionId || null, input.eventType, input.pagePath || null,
+    `INSERT INTO user_events (visitor_id, event_id, event_type, page_path, entity_type, entity_id, event_data, ip_hash, user_agent, occurred_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [visitorId, eventId, input.eventType, input.pagePath || null,
       input.entityType || null, input.entityId || null, JSON.stringify(input.data || {}), ipHash,
       String(input.userAgent || '').slice(0, 500) || null, input.occurredAt ? new Date(input.occurredAt) : new Date()]
   );
+}
+
+async function listUserBehavior(userName) {
+  const normalizedName = String(userName || '').trim().toLowerCase();
+  const visitorIds = list('users')
+    .filter((user) => String(user.userName || '').toLowerCase() === normalizedName)
+    .map((user) => user.visitorId);
+  if (!visitorIds.length || !pool) return { visitorIds, events: [] };
+  const placeholders = visitorIds.map(() => '?').join(', ');
+  const [rows] = await pool.query(
+    `SELECT visitor_id AS visitorId, event_id AS eventId, event_type AS eventType,
+            page_path AS pagePath, entity_type AS entityType, entity_id AS entityId,
+            event_data AS eventData, occurred_at AS occurredAt
+      FROM user_events
+      WHERE visitor_id IN (${placeholders})
+      ORDER BY occurred_at ASC`,
+    visitorIds
+  );
+  return { visitorIds, events: rows.map((row) => ({ ...row, eventData: parseJson(row.eventData) })) };
 }
 
 function getDatabaseStatus() {
@@ -172,4 +193,4 @@ async function installSchema() {
   }
 }
 
-module.exports = { initializeDatabase, installSchema, list, get, upsert, remove, replaceAll, recordUserEvent, getDatabaseStatus, closeDatabase };
+module.exports = { initializeDatabase, installSchema, list, get, upsert, remove, replaceAll, recordUserEvent, listUserBehavior, getDatabaseStatus, closeDatabase };

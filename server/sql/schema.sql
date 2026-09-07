@@ -8,31 +8,30 @@ CREATE DATABASE IF NOT EXISTS `curva_denim_b2b`
 USE `curva_denim_b2b`;
 
 CREATE TABLE IF NOT EXISTS `users` (
-  `user_id` VARCHAR(64) NOT NULL,
+  `visitor_id` VARCHAR(64) NOT NULL,
   `user_data` JSON NOT NULL,
-  `username` VARCHAR(255) GENERATED ALWAYS AS
-    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.username')))) STORED,
+  `user_name` VARCHAR(255) GENERATED ALWAYS AS
+    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.userName')))) STORED,
   `role` VARCHAR(32) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`user_data`, '$.role'))) STORED,
   `created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (`user_id`),
-  UNIQUE KEY `uq_users_username` (`username`),
+  PRIMARY KEY (`visitor_id`),
+  KEY `idx_users_user_name` (`user_name`),
   KEY `idx_users_role` (`role`)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `user_profiles` (
-  `user_id` VARCHAR(64) NOT NULL,
+  `visitor_id` VARCHAR(64) NOT NULL,
   `profile_data` JSON NOT NULL,
   `updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (`user_id`),
-  CONSTRAINT `fk_user_profiles_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE
+  PRIMARY KEY (`visitor_id`),
+  CONSTRAINT `fk_user_profiles_visitor` FOREIGN KEY (`visitor_id`) REFERENCES `users` (`visitor_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `user_events` (
+  `visitor_id` VARCHAR(64) NOT NULL,
   `event_id` VARCHAR(64) NOT NULL,
-  `user_id` VARCHAR(64) NULL,
-  `session_id` VARCHAR(128) NULL,
   `event_type` VARCHAR(100) NOT NULL,
   `page_path` VARCHAR(500) NULL,
   `entity_type` VARCHAR(64) NULL,
@@ -41,31 +40,29 @@ CREATE TABLE IF NOT EXISTS `user_events` (
   `ip_hash` CHAR(64) NULL,
   `user_agent` VARCHAR(500) NULL,
   `occurred_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (`event_id`),
-  KEY `idx_user_events_user_time` (`user_id`, `occurred_at`),
+  PRIMARY KEY (`visitor_id`, `event_id`),
+  KEY `idx_user_events_visitor_time` (`visitor_id`, `occurred_at`),
   KEY `idx_user_events_type_time` (`event_type`, `occurred_at`),
-  KEY `idx_user_events_session` (`session_id`)
+  KEY `idx_user_events_event_id` (`event_id`)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `user_consents` (
   `consent_id` VARCHAR(64) NOT NULL,
-  `user_id` VARCHAR(64) NULL,
-  `session_id` VARCHAR(128) NULL,
+  `visitor_id` VARCHAR(64) NOT NULL,
   `consent_type` VARCHAR(64) NOT NULL,
   `granted` BOOLEAN NOT NULL,
   `policy_version` VARCHAR(32) NULL,
   `consent_data` JSON NULL,
   `recorded_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`consent_id`),
-  KEY `idx_user_consents_user_type` (`user_id`, `consent_type`),
-  KEY `idx_user_consents_session` (`session_id`)
+  KEY `idx_user_consents_visitor_type` (`visitor_id`, `consent_type`)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `rfq_assortments` (
-  `user_id` VARCHAR(64) NOT NULL,
+  `visitor_id` VARCHAR(64) NOT NULL,
   `assortment_data` JSON NOT NULL,
   `updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (`user_id`)
+  PRIMARY KEY (`visitor_id`)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `quotes` (
@@ -73,15 +70,18 @@ CREATE TABLE IF NOT EXISTS `quotes` (
   `quote_data` JSON NOT NULL,
   `reference` VARCHAR(64) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.reference'))) STORED,
-  `user_id` VARCHAR(64) GENERATED ALWAYS AS
-    (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.userId'))) STORED,
+  `visitor_id` VARCHAR(64) GENERATED ALWAYS AS
+    (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.visitorId'))) STORED,
+  `user_name` VARCHAR(255) GENERATED ALWAYS AS
+    (LOWER(JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.userName')))) STORED,
   `status` VARCHAR(32) GENERATED ALWAYS AS
     (JSON_UNQUOTE(JSON_EXTRACT(`quote_data`, '$.status'))) STORED,
   `created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`quote_id`),
   UNIQUE KEY `uq_quotes_reference` (`reference`),
-  KEY `idx_quotes_user` (`user_id`),
+  KEY `idx_quotes_visitor` (`visitor_id`),
+  KEY `idx_quotes_user_name` (`user_name`),
   KEY `idx_quotes_status` (`status`)
 ) ENGINE=InnoDB;
 

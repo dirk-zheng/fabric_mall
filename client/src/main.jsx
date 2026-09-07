@@ -2,6 +2,9 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
+import { getOrCreateVisitorId } from './visitorIdentity.js'
+
+getOrCreateVisitorId()
 
 const initialProducts = window.__INITIAL_PRODUCTS__ || []
 const initialFaqs = window.__INITIAL_FAQS__ || []

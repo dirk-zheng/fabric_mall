@@ -1,3 +1,5 @@
+import { getOrCreateVisitorId } from '../visitorIdentity.js';
+
 /**
  * WebSocket 客户端 — 管理与服务端的持久连接
  *
@@ -121,8 +123,11 @@ class WSClient {
   _getWsUrl() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = this._getToken();
-    const url = `${protocol}//${location.host}${WS_PATH}`;
-    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    const visitorId = getOrCreateVisitorId();
+    const query = new URLSearchParams();
+    if (token) query.set('token', token);
+    if (visitorId) query.set('visitorId', visitorId);
+    return `${protocol}//${location.host}${WS_PATH}?${query.toString()}`;
   }
 
   //执行_ensureConnection函数逻辑

@@ -4,6 +4,7 @@ import { webcrypto } from 'node:crypto';
 const storage = new Map();
 globalThis.crypto ??= webcrypto;
 globalThis.location = { protocol: 'http:', host: 'localhost:5173' };
+globalThis.window = globalThis;
 globalThis.localStorage = {
   getItem: key => storage.get(key) ?? null,
   setItem: (key, value) => storage.set(key, String(value)),
@@ -58,6 +59,8 @@ const { default: wsClient } = await import('../src/api/ws.js');
 // Calling connect repeatedly while CONNECTING or OPEN must reuse one socket.
 const firstRequest = wsClient.send('products.list');
 const firstSocket = MockWebSocket.instances[0];
+const firstUrl = new URL(firstSocket.url);
+assert.match(firstUrl.searchParams.get('visitorId'), /^[a-zA-Z0-9-]{16,64}$/);
 wsClient._connect();
 assert.equal(MockWebSocket.instances.length, 1);
 firstSocket.open();
@@ -71,6 +74,9 @@ assert.deepEqual(await firstRequest, []);
 localStorage.setItem('mall_user', JSON.stringify({ token: 'test-token' }));
 wsClient.setToken('test-token');
 const secondSocket = MockWebSocket.instances[1];
+const secondUrl = new URL(secondSocket.url);
+assert.equal(secondUrl.searchParams.get('visitorId'), firstUrl.searchParams.get('visitorId'));
+assert.equal(secondUrl.searchParams.get('token'), 'test-token');
 await Promise.resolve();
 assert.equal(MockWebSocket.instances.length, 2);
 assert.equal(wsClient._reconnectTimer, null);

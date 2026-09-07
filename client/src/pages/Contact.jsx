@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Building2, CheckCircle2, Mail, Send } from 'lucide-react';
+import { getOrCreateVisitorId } from '../visitorIdentity';
 
 const initial=product=>({name:'',company:'',country:'',email:'',businessType:'apparel-brand',salesChannels:'',websiteUrl:'',targetRetailPrice:'',annualVolume:'',productCategory:'denim-fabric',specifications:product,estimatedQuantity:'',deliveryDestination:'',targetDelivery:'',message:'',website:''});
 
@@ -9,7 +10,7 @@ export function QuoteForm({initialProduct='',compact=false}){
   const [status,setStatus]=useState({sending:false,error:'',reference:''});
   useEffect(()=>{if(initialProduct)setForm(x=>({...x,specifications:initialProduct}))},[initialProduct]);
   const update=e=>setForm(x=>({...x,[e.target.name]:e.target.value}));
-  const submit=async e=>{e.preventDefault();setStatus({sending:true,error:'',reference:''});try{const res=await fetch('/api/quotes/public',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form)});const result=await res.json();if(!res.ok)throw new Error(result.message||'Unable to submit inquiry');setStatus({sending:false,error:'',reference:result.data.reference});setForm(initial(''))}catch(err){setStatus({sending:false,error:err.message,reference:''})}};
+  const submit=async e=>{e.preventDefault();setStatus({sending:true,error:'',reference:''});try{const visitorId=getOrCreateVisitorId();const res=await fetch('/api/quotes/public',{method:'POST',headers:{'Content-Type':'application/json','X-Visitor-ID':visitorId},body:JSON.stringify({...form,visitorId})});const result=await res.json();if(!res.ok)throw new Error(result.message||'Unable to submit inquiry');setStatus({sending:false,error:'',reference:result.data.reference});setForm(initial(''))}catch(err){setStatus({sending:false,error:err.message,reference:''})}};
   if(status.reference)return <div className="rounded-3xl bg-[#e7efe8] p-8 text-center"><CheckCircle2 className="mx-auto text-[#2d6a4f]" size={44}/><h2 className="mt-4 font-heading text-2xl font-bold">Buyer inquiry received.</h2><p className="mt-2 text-[#56635c]">Our wholesale team will review your retail profile and assortment needs. Reference: <strong>{status.reference}</strong></p></div>;
   return <form onSubmit={submit} className={`grid gap-5 ${compact?'':'rounded-[2rem] bg-white p-6 shadow-sm sm:p-9'}`}>
     <input name="website" value={form.website} onChange={update} className="hidden" tabIndex="-1" autoComplete="off"/>

@@ -9,6 +9,10 @@ const { detectContactSignals, notifyLarkContactMessage, notifyRobotChat, notifyQ
 const { GUEST_MESSAGE_LIMIT, getGuestChatUsage } = require('./services/guestChatLimits');
 const supportConversations = require('./services/supportConversations');
 const db = require('./database');
+const {
+  accountRows, assertVisitorAvailable, bindVisitor, findAccount, listAccounts, normalizeUserName,
+  normalizeVisitorId, safeAccount, updateAccountRole,
+} = require('./services/identity');
 
 // ─── Data Paths ──────────────────────────────────
 const PRODUCTS_FILE = path.join(__dirname, 'data', 'products.json');
@@ -28,14 +32,9 @@ function writeProducts(products) {
 
 //读取用户数据列表
 function readUsers() {
-  return db.list('users').map((user) => (
+  return listAccounts().map((user) => (
     user.role === 'salesperson' ? { ...user, role: 'seller' } : user
   ));
-}
-
-//将用户数据列表写入本地文件
-function writeUsers(users) {
-  return Promise.all(users.map((user) => db.upsert('users', user.id, user)));
 }
 
 //读取询价数据列表
@@ -64,30 +63,33 @@ function writeList(file, list) {
 const rfqAssortmentStore = {};
 
 //获取指定用户的 RFQ 选品清单并在不存在时初始化
-function getUserRfqAssortment(userId) {
-  if (!rfqAssortmentStore[userId]) rfqAssortmentStore[userId] = db.get('rfqAssortments', userId)?.items || [];
-  return rfqAssortmentStore[userId];
+function getVisitorRfqAssortment(visitorId) {
+  if (!rfqAssortmentStore[visitorId]) rfqAssortmentStore[visitorId] = db.get('rfqAssortments', visitorId)?.items || [];
+  return rfqAssortmentStore[visitorId];
 }
 
-function saveUserRfqAssortment(userId) {
-  return db.upsert('rfqAssortments', userId, { userId, items: getUserRfqAssortment(userId), updatedAt: new Date().toISOString() });
+function saveVisitorRfqAssortment(visitorId) {
+  return db.upsert('rfqAssortments', visitorId, { visitorId, items: getVisitorRfqAssortment(visitorId), updatedAt: new Date().toISOString() });
 }
 
 // ─── In-Memory IM Store ──────────────────────────
 const imRooms = {};      // roomId → { roomId, members[], memberNames{}, lastMessage, updatedAt }
-const imMessages = {};   // roomId → [ { id, roomId, senderId, senderName, content, timestamp } ]
-const clientMap = new Map(); // userId → Set<WebSocket>
+const imMessages = {};   // roomId → [ { id, roomId, senderUserName, senderName, content, timestamp } ]
+const clientMap = new Map(); // userName → Set<WebSocket>
+const visitorClientMap = new Map(); // visitorId → Set<WebSocket>
 const guestChatCounts = new Map(); // visitorId → accepted anonymous message count
 
 //获取或创建两个用户之间的即时通信房间
 function getOrCreateRoom(userA, userB) {
-  const ids = [userA.id, userB.id].sort();
-  const roomId = `chat_${ids[0]}_${ids[1]}`;
+  const userNames = [userA.userName, userB.userName].sort();
+  const roomId = `chat_${uuidv4()}`;
+  const existingRoom = Object.values(imRooms).find((room) => userNames.every((userName) => room.members.includes(userName)));
+  if (existingRoom) return existingRoom;
   if (!imRooms[roomId]) {
     imRooms[roomId] = {
       roomId,
-      members: ids,
-      memberNames: { [userA.id]: userA.name || userA.username, [userB.id]: userB.name || userB.username },
+      members: userNames,
+      memberNames: { [userA.userName]: userA.name || userA.userName, [userB.userName]: userB.name || userB.userName },
       lastMessage: '',
       updatedAt: new Date().toISOString()
     };
@@ -99,23 +101,23 @@ function getOrCreateRoom(userA, userB) {
 }
 
 //登记指定用户的WebSocket客户端连接
-function addClient(userId, ws) {
-  if (!clientMap.has(userId)) clientMap.set(userId, new Set());
-  clientMap.get(userId).add(ws);
+function addClient(userName, ws) {
+  if (!clientMap.has(userName)) clientMap.set(userName, new Set());
+  clientMap.get(userName).add(ws);
 }
 
 //移除指定用户的WebSocket客户端连接
-function removeClient(userId, ws) {
-  const set = clientMap.get(userId);
+function removeClient(userName, ws) {
+  const set = clientMap.get(userName);
   if (set) {
     set.delete(ws);
-    if (set.size === 0) clientMap.delete(userId);
+    if (set.size === 0) clientMap.delete(userName);
   }
 }
 
 //向指定用户的全部在线连接推送消息
-function sendToUser(userId, data) {
-  const set = clientMap.get(userId);
+function sendToUser(userName, data) {
+  const set = clientMap.get(userName);
   if (set) {
     const payload = JSON.stringify(data);
     //向用户的每个有效WebSocket连接发送数据
@@ -125,9 +127,28 @@ function sendToUser(userId, data) {
   }
 }
 
+function addVisitorClient(visitorId, ws) {
+  if (!visitorClientMap.has(visitorId)) visitorClientMap.set(visitorId, new Set());
+  visitorClientMap.get(visitorId).add(ws);
+}
+
+function removeVisitorClient(visitorId, ws) {
+  const set = visitorClientMap.get(visitorId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) visitorClientMap.delete(visitorId);
+}
+
+function sendToVisitor(visitorId, data) {
+  const payload = JSON.stringify(data);
+  visitorClientMap.get(visitorId)?.forEach((ws) => {
+    if (ws.readyState === 1) ws.send(payload);
+  });
+}
+
 //组合用户 RFQ 选品清单与对应商品详情
-function buildRfqAssortmentItems(userId) {
-  const assortment = getUserRfqAssortment(userId);
+function buildRfqAssortmentItems(visitorId) {
+  const assortment = getVisitorRfqAssortment(visitorId);
   const products = readProducts();
   const items = assortment
     //将选品商品ID映射为完整商品信息
@@ -228,78 +249,83 @@ function checkAuth(ws) {
 // Auth
 //处理WebSocket用户登录并更新连接身份
 async function handleLogin(payload, ws) {
-  const { username, password } = payload || {};
-  if (!username || !password) throw new Error('Username and password are required');
+  const userName = normalizeUserName(payload?.userName);
+  const { password } = payload || {};
+  const visitorId = normalizeVisitorId(ws.visitorId);
+  if (!userName || !password) throw new Error('user_name and password are required');
 
-  const users = readUsers();
-  //根据用户名查找登录用户
-  const loginName = String(username).trim().toLowerCase();
-  const user = users.find(u => String(u.username).toLowerCase() === loginName);
-  if (!user) throw new Error('Invalid username or password');
+  const user = findAccount(userName);
+  if (!user) throw new Error('Invalid user_name or password');
 
   const match = await bcrypt.compare(password, user.password);
-  if (!match) throw new Error('Invalid username or password');
+  if (!match) throw new Error('Invalid user_name or password');
 
-  const token = generateToken(user);
-  const { password: _, ...safeUser } = user;
+  const boundUser = await bindVisitor(user, visitorId, { lastLoginAt: new Date().toISOString() });
+  supportConversations.linkVisitorToUser(visitorId, boundUser);
+  const token = generateToken(boundUser);
 
   // Update this connection's auth
-  ws.user = { id: user.id, username: user.username, role: user.role, name: user.name };
-  ws.userId = user.id;
-  addClient(user.id, ws);
-  await db.recordUserEvent({ userId: user.id, eventType: 'auth.login_succeeded', data: { channel: 'websocket' } });
+  if (ws.userName) removeClient(ws.userName, ws);
+  ws.user = safeAccount(boundUser);
+  ws.userName = boundUser.userName;
+  ws.visitorId = visitorId;
+  addClient(boundUser.userName, ws);
+  await db.recordUserEvent({ visitorId, eventType: 'auth.login_succeeded', data: { channel: 'websocket', userName } });
+  const behavior = await db.listUserBehavior(userName);
 
-  return { user: safeUser, token };
+  return { user: safeAccount(boundUser), token, behavior };
 }
 
 //处理WebSocket用户注册并更新连接身份
 async function handleRegister(payload, ws) {
-  const { username, password, name, quoteReference } = payload || {};
-  if (!username || !password) throw new Error('Username and password are required');
+  const userName = normalizeUserName(payload?.userName);
+  const { password, name, quoteReference } = payload || {};
+  const visitorId = normalizeVisitorId(ws.visitorId);
+  if (!userName || !password) throw new Error('user_name and password are required');
   if (typeof password !== 'string' || password.length < 6) throw new Error('Password must be at least 6 characters');
 
-  const users = readUsers();
-  const normalizedUsername = String(username).trim();
-  const accountUsername = normalizedUsername.includes('@') ? normalizedUsername.toLowerCase() : normalizedUsername;
-  //检查注册用户名是否已经存在
-  if (users.some(u => String(u.username).toLowerCase() === accountUsername.toLowerCase())) throw new Error('An account already uses this email or username');
+  if (findAccount(userName)) throw new Error('An account already uses this user_name');
+  assertVisitorAvailable(userName, visitorId);
 
   const hashed = await bcrypt.hash(password, 10);
   const newUser = {
-    id: uuidv4(),
-    username: accountUsername,
+    visitorId,
+    userName,
     password: hashed,
     role: 'user',
-    name: name || accountUsername
+    name: name || userName,
+    createdAt: new Date().toISOString(),
   };
-  users.push(newUser);
-  await writeUsers(users);
+  await db.upsert('users', visitorId, newUser);
+  supportConversations.linkVisitorToUser(visitorId, newUser);
 
-  if (quoteReference && accountUsername.includes('@')) {
+  if (quoteReference && userName.includes('@')) {
     const quotes = readQuotes();
-    const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === accountUsername);
+    const quote = quotes.find((item) => item.reference === quoteReference && item.customer?.email?.toLowerCase() === userName);
     if (quote) {
-      quote.userId = newUser.id;
+      quote.visitorId = visitorId;
+      quote.userName = userName;
       quote.accountLinkedAt = new Date().toISOString();
       await writeQuotes(quotes);
     }
   }
 
   const token = generateToken(newUser);
-  const { password: _, ...safeUser } = newUser;
+  if (ws.userName) removeClient(ws.userName, ws);
+  ws.user = safeAccount(newUser);
+  ws.userName = userName;
+  ws.visitorId = visitorId;
+  addClient(userName, ws);
+  await db.recordUserEvent({ visitorId, eventType: 'auth.registered', data: { channel: 'websocket', userName } });
+  const behavior = await db.listUserBehavior(userName);
 
-  ws.user = { id: newUser.id, username: newUser.username, role: newUser.role, name: newUser.name };
-  ws.userId = newUser.id;
-  addClient(newUser.id, ws);
-  await db.recordUserEvent({ userId: newUser.id, eventType: 'auth.registered', data: { channel: 'websocket' } });
-
-  return { user: safeUser, token };
+  return { user: safeAccount(newUser), token, behavior };
 }
 
 //返回当前WebSocket连接的用户信息
-function handleMe(payload, ws) {
+async function handleMe(payload, ws) {
   checkAuth(ws);
-  return ws.user;
+  return { user: ws.user, behavior: await db.listUserBehavior(ws.user.userName) };
 }
 
 // Products
@@ -426,7 +452,7 @@ function handleProductDelete(payload, ws) {
 //返回当前用户的 RFQ 选品清单详情
 function handleRfqAssortmentGet(payload, ws) {
   checkAuth(ws);
-  return buildRfqAssortmentItems(ws.userId);
+  return buildRfqAssortmentItems(ws.visitorId);
 }
 
 //向当前用户的 RFQ 选品清单添加商品
@@ -440,14 +466,14 @@ async function handleRfqAssortmentAdd(payload, ws) {
   const product = products.find(p => p.id === productId);
   if (!product) throw new Error('Product not found');
 
-  const assortment = getUserRfqAssortment(ws.userId);
+  const assortment = getVisitorRfqAssortment(ws.visitorId);
   //查找选品清单中是否已有相同商品
   const existing = assortment.find(i => i.productId === productId);
   if (existing) existing.quantity += quantity;
   else assortment.push({ productId, quantity });
 
-  await saveUserRfqAssortment(ws.userId);
-  await db.recordUserEvent({ userId: ws.userId, eventType: 'assortment.item_added', entityType: 'product', entityId: productId, data: { quantity } });
+  await saveVisitorRfqAssortment(ws.visitorId);
+  await db.recordUserEvent({ visitorId: ws.visitorId, eventType: 'assortment.item_added', entityType: 'product', entityId: productId, data: { quantity } });
 
   return { productId, quantity: existing ? existing.quantity : quantity };
 }
@@ -459,13 +485,13 @@ async function handleRfqAssortmentUpdate(payload, ws) {
   if (!quantity || quantity < 1 || !Number.isInteger(quantity))
     throw new Error('Quantity must be a positive integer');
 
-  const assortment = getUserRfqAssortment(ws.userId);
+  const assortment = getVisitorRfqAssortment(ws.visitorId);
   //查找需要更新数量的选品商品
   const item = assortment.find(i => i.productId === productId);
   if (!item) throw new Error('Item not found in RFQ assortment');
 
   item.quantity = quantity;
-  await saveUserRfqAssortment(ws.userId);
+  await saveVisitorRfqAssortment(ws.visitorId);
   return { productId, quantity };
 }
 
@@ -473,21 +499,21 @@ async function handleRfqAssortmentUpdate(payload, ws) {
 async function handleRfqAssortmentRemove(payload, ws) {
   checkAuth(ws);
   const { productId } = payload || {};
-  const assortment = getUserRfqAssortment(ws.userId);
+  const assortment = getVisitorRfqAssortment(ws.visitorId);
   //查找需要移除的选品商品索引
   const idx = assortment.findIndex(i => i.productId === productId);
   if (idx === -1) throw new Error('Item not found in RFQ assortment');
 
   assortment.splice(idx, 1);
-  await saveUserRfqAssortment(ws.userId);
+  await saveVisitorRfqAssortment(ws.visitorId);
   return { removed: productId };
 }
 
 //清空当前用户的 RFQ 选品清单
 async function handleRfqAssortmentClear(payload, ws) {
   checkAuth(ws);
-  rfqAssortmentStore[ws.userId] = [];
-  await saveUserRfqAssortment(ws.userId);
+  rfqAssortmentStore[ws.visitorId] = [];
+  await saveVisitorRfqAssortment(ws.visitorId);
   return { cleared: true };
 }
 
@@ -507,7 +533,7 @@ async function handleQuoteSubmit(payload, ws) {
   if (!specifications?.trim()) throw new Error('Denim style and specification details are required');
   const quantity = Number(estimatedQuantity);
   if (!Number.isInteger(quantity) || quantity < 1) throw new Error('Estimated quantity must be a positive integer');
-  const { items } = buildRfqAssortmentItems(ws.userId);
+  const { items } = buildRfqAssortmentItems(ws.visitorId);
   if (items.length === 0) throw new Error('Add at least one product program to the RFQ assortment');
 
   const now = new Date();
@@ -518,10 +544,12 @@ async function handleQuoteSubmit(payload, ws) {
     reference,
     status: 'new',
     customer: {
-      id: ws.userId,
-      username: ws.user.username,
-      name: ws.user.name || ws.user.username
+      visitorId: ws.visitorId,
+      userName: ws.user.userName,
+      name: ws.user.name || ws.user.userName
     },
+    visitorId: ws.visitorId,
+    userName: ws.user.userName,
     market: market.trim(),
     targetCustomerProfile: targetCustomerProfile.trim(),
     specifications: specifications.trim(),
@@ -540,9 +568,9 @@ async function handleQuoteSubmit(payload, ws) {
   const quotes = readQuotes();
   quotes.push(quote);
   await writeQuotes(quotes);
-  rfqAssortmentStore[ws.userId] = [];
-  await saveUserRfqAssortment(ws.userId);
-  await db.recordUserEvent({ userId: ws.userId, eventType: 'quote.submitted', entityType: 'quote', entityId: quote.id, data: { reference } });
+  rfqAssortmentStore[ws.visitorId] = [];
+  await saveVisitorRfqAssortment(ws.visitorId);
+  await db.recordUserEvent({ visitorId: ws.visitorId, eventType: 'quote.submitted', entityType: 'quote', entityId: quote.id, data: { reference } });
   void notifyQuoteInquiry(quote);
 
   return {
@@ -601,14 +629,14 @@ async function handleSupportChat(payload, ws) {
       throw error;
     }
     void db.recordUserEvent({
-      sessionId: visitorId,
+      visitorId,
       eventType: 'support.guest_chat_message',
       entityType: 'support_message',
       entityId: messageId,
       data: { messageNumber: guestMessageCount },
     }).catch((error) => console.error('Guest chat event recording failed:', error.message));
   }
-  const notificationUser = ws.user || { id: visitorId, name: 'Anonymous visitor', username: 'guest' };
+  const notificationUser = ws.user || { visitorId, name: 'Anonymous visitor', userName: 'guest' };
   void notifyRobotChat({ user: notificationUser, message: userMessage, matchedKeyword: result.matchedKeyword, timestamp });
   return {
     userMessage,
@@ -632,13 +660,16 @@ function supportStaffUsers() {
 }
 
 function pushSupportEvent(conversation, type, data) {
-  const recipients = new Set([conversation.customerId]);
+  const recipients = new Set([conversation.customerUserName]);
   supportStaffUsers().forEach((staff) => {
-    if (staff.role === 'admin' || staff.id === conversation.assignedTo || conversation.status === 'waiting_human') {
-      recipients.add(staff.id);
+    if (staff.role === 'admin' || staff.userName === conversation.assignedTo || conversation.status === 'waiting_human') {
+      recipients.add(staff.userName);
     }
   });
-  recipients.forEach((userId) => sendToUser(userId, { type, success: true, data }));
+  recipients.forEach((userName) => sendToUser(userName, { type, success: true, data }));
+  if (conversation.customerVisitorId && conversation.customerUserName?.startsWith('visitor:')) {
+    sendToVisitor(conversation.customerVisitorId, { type, success: true, data });
+  }
 }
 
 function pushSupportUpdate(conversation, messages = []) {
@@ -647,12 +678,20 @@ function pushSupportUpdate(conversation, messages = []) {
 }
 
 function requireConversationCustomer(conversation, ws) {
-  if (conversation.customerId !== ws.userId) throw new Error('Access denied');
+  if (conversation.customerUserName !== supportCustomer(ws).userName) throw new Error('Access denied');
+}
+
+function supportCustomer(ws) {
+  return ws.user || {
+    visitorId: ws.visitorId,
+    userName: `visitor:${ws.visitorId}`,
+    name: `Guest ${ws.visitorId.slice(-6)}`,
+  };
 }
 
 function requireAssignedStaff(conversation, ws) {
   checkStaff(ws);
-  if (ws.user.role !== 'admin' && conversation.assignedTo !== ws.userId) {
+  if (ws.user.role !== 'admin' && conversation.assignedTo !== ws.userName) {
     throw new Error('Claim this conversation before replying');
   }
 }
@@ -662,18 +701,17 @@ function shouldRequestHuman(message) {
     || /(human|person|sales|salesperson|representative|agent|人工|销售|业务员|管理员|quotation|formal quote)/i.test(message);
 }
 
-function handleSupportConversationGet(payload, ws) {
-  checkAuth(ws);
+async function handleSupportConversationGet(payload, ws) {
   if (isStaff(ws.user)) {
     if (!payload?.conversationId) throw new Error('A conversation ID is required');
     const result = supportConversations.getConversation(payload.conversationId);
-    if (ws.user.role !== 'admin' && result.conversation.status !== 'waiting_human' && result.conversation.assignedTo !== ws.userId) {
+    if (ws.user.role !== 'admin' && result.conversation.status !== 'waiting_human' && result.conversation.assignedTo !== ws.userName) {
       throw new Error('Access denied');
     }
     return result;
   }
 
-  const current = supportConversations.getCustomerConversation(ws.user).conversation;
+  const current = supportConversations.getCustomerConversation(supportCustomer(ws)).conversation;
   if (current.status === 'bot_active' || current.status === 'resolved') {
     const createdMessages = [];
     const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
@@ -684,24 +722,34 @@ function handleSupportConversationGet(payload, ws) {
       conversation.claimedBy = null;
       conversation.resolvedAt = null;
       createdMessages.push(appendMessage({
-        senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+        senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
         content: 'You have been added to the sales queue. A fabric specialist will join this conversation shortly.',
       }));
     });
     pushSupportUpdate(updated.conversation, createdMessages);
   }
 
+  await db.recordUserEvent({
+    visitorId: ws.visitorId,
+    eventType: 'support.queue_entered',
+    entityType: 'support_conversation',
+    entityId: current.id,
+  });
   return supportConversations.getConversation(current.id);
 }
 
-function handleSupportMessageSend(payload, ws) {
-  checkAuth(ws);
+async function handleSupportMessageSend(payload, ws) {
   const content = String(payload?.content || '').trim();
   if (!content) throw new Error('Message cannot be empty');
   if (content.length > 3000) throw new Error('Message must be 3000 characters or fewer');
 
+  let guestMessageCount = guestChatCounts.get(ws.visitorId) || 0;
+  if (!ws.user && guestMessageCount >= GUEST_MESSAGE_LIMIT) {
+    return { blocked: true, guestUsage: getGuestChatUsage(guestMessageCount) };
+  }
+
   let conversationId = payload?.conversationId;
-  if (!isStaff(ws.user)) conversationId = supportConversations.getCustomerConversation(ws.user).conversation.id;
+  if (!isStaff(ws.user)) conversationId = supportConversations.getCustomerConversation(supportCustomer(ws)).conversation.id;
   if (!conversationId) throw new Error('Conversation ID is required');
 
   const current = supportConversations.getConversation(conversationId).conversation;
@@ -722,34 +770,52 @@ function handleSupportMessageSend(payload, ws) {
 
     const message = appendMessage({
       senderType: isStaff(ws.user) ? (ws.user.role === 'admin' ? 'admin' : 'seller') : 'customer',
-      senderId: ws.userId,
-      senderName: ws.user.name || ws.user.username,
+      senderUserName: supportCustomer(ws).userName,
+      senderName: supportCustomer(ws).name,
       content,
     });
     createdMessages.push(message);
 
     if (!isStaff(ws.user) && conversation.status === 'bot_active') {
       if (shouldRequestHuman(content)) {
-        void notifyLarkContactMessage({ user: ws.user, message: content, timestamp: message.createdAt });
         conversation.status = 'waiting_human';
         conversation.botEnabled = false;
         conversation.priority = 'high';
         createdMessages.push(appendMessage({
-          senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+          senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
           content: 'Your request has been added to our sales queue. A team member will join this conversation shortly.',
         }));
       } else {
         const result = getAIResponse(content);
         createdMessages.push(appendMessage({
-          senderType: 'bot', senderId: 'bot', senderName: 'Kora · AI Assistant', content: result.reply,
+          senderType: 'bot', senderUserName: 'bot', senderName: 'Kora · AI Assistant', content: result.reply,
         }));
-        void notifyRobotChat({ user: ws.user, message: content, matchedKeyword: result.matchedKeyword, timestamp: message.createdAt });
+        void notifyRobotChat({ user: supportCustomer(ws), message: content, matchedKeyword: result.matchedKeyword, timestamp: message.createdAt });
       }
     }
   });
 
+  if (!isStaff(ws.user) && detectContactSignals(content).length) {
+    void notifyLarkContactMessage({ user: supportCustomer(ws), message: content, timestamp: createdMessages[0]?.createdAt });
+  }
+  if (!ws.user) {
+    guestMessageCount += 1;
+    guestChatCounts.set(ws.visitorId, guestMessageCount);
+  }
+
   pushSupportUpdate(updated.conversation, createdMessages);
-  return { conversation: updated.conversation, messages: createdMessages };
+  await db.recordUserEvent({
+    visitorId: ws.visitorId,
+    eventType: 'support.conversation_message_sent',
+    entityType: 'support_conversation',
+    entityId: conversationId,
+    data: { senderType: isStaff(ws.user) ? ws.user.role : 'customer' },
+  });
+  return {
+    conversation: updated.conversation,
+    messages: createdMessages,
+    guestUsage: ws.user ? undefined : getGuestChatUsage(guestMessageCount),
+  };
 }
 
 function handleSupportHandoffRequest(payload, ws) {
@@ -767,7 +833,7 @@ function handleSupportHandoffRequest(payload, ws) {
     conversation.claimedBy = null;
     conversation.resolvedAt = null;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
       content: 'A sales representative has been requested. Please keep this window open; your conversation history will be shared with the team.',
     }));
   });
@@ -780,26 +846,26 @@ function handleSupportQueueList(payload, ws) {
   checkStaff(ws);
   const all = supportConversations.listConversations();
   if (ws.user.role === 'admin') return all.filter((item) => item.status !== 'closed');
-  return all.filter((item) => item.status === 'waiting_human' || item.assignedTo === ws.userId);
+  return all.filter((item) => item.status === 'waiting_human' || item.assignedTo === ws.userName);
 }
 
 function handleSupportClaim(payload, ws) {
   checkAuth(ws);
   checkStaff(ws);
   const current = supportConversations.getConversation(payload?.conversationId).conversation;
-  if (current.assignedTo && current.assignedTo !== ws.userId && ws.user.role !== 'admin') {
+  if (current.assignedTo && current.assignedTo !== ws.userName && ws.user.role !== 'admin') {
     throw new Error(`Conversation is already assigned to ${current.assignedName || 'another representative'}`);
   }
   const createdMessages = [];
   const updated = supportConversations.updateConversation(current.id, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
-    conversation.assignedTo = ws.userId;
-    conversation.assignedName = ws.user.name || ws.user.username;
-    conversation.claimedBy = ws.userId;
+    conversation.assignedTo = ws.userName;
+    conversation.assignedName = ws.user.name || ws.user.userName;
+    conversation.claimedBy = ws.userName;
     conversation.resolvedAt = null;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
       content: `${conversation.assignedName} has joined the conversation as your ${ws.user.role === 'admin' ? 'support administrator' : 'sales representative'}.`,
     }));
   });
@@ -810,17 +876,17 @@ function handleSupportClaim(payload, ws) {
 function handleSupportTransfer(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
-  const target = readUsers().find((user) => user.id === payload?.toUserId && isStaff(user));
+  const target = readUsers().find((user) => user.userName === payload?.toUserName && isStaff(user));
   if (!target) throw new Error('Sales or administrator account not found');
   const createdMessages = [];
   const updated = supportConversations.updateConversation(payload?.conversationId, ({ conversation, appendMessage }) => {
     conversation.status = 'human_active';
     conversation.botEnabled = false;
-    conversation.assignedTo = target.id;
-    conversation.assignedName = target.name || target.username;
-    conversation.claimedBy = ws.userId;
+    conversation.assignedTo = target.userName;
+    conversation.assignedName = target.name || target.userName;
+    conversation.claimedBy = ws.userName;
     createdMessages.push(appendMessage({
-      senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
       content: `This conversation has been transferred to ${conversation.assignedName}.`,
     }));
   });
@@ -838,7 +904,7 @@ function handleSupportResolve(payload, ws) {
     conversation.botEnabled = false;
     conversation.resolvedAt = new Date().toISOString();
     createdMessages.push(appendMessage({
-      senderType: 'system', senderId: 'system', senderName: 'Curva Fabric Support',
+      senderType: 'system', senderUserName: 'system', senderName: 'Curva Fabric Support',
       content: 'This conversation has been marked as resolved. Send another message whenever you need further assistance.',
     }));
   });
@@ -849,7 +915,7 @@ function handleSupportResolve(payload, ws) {
 function handleSupportStaffList(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
-  return supportStaffUsers().map((user) => ({ id: user.id, name: user.name || user.username, role: user.role }));
+  return supportStaffUsers().map((user) => ({ userName: user.userName, name: user.name || user.userName, role: user.role }));
 }
 
 //返回WebSocket客服常见问题列表
@@ -878,29 +944,25 @@ async function handleAdminUpdateUserRole(payload, ws) {
   checkAuth(ws);
   checkAdmin(ws);
 
-  const userId = String(payload?.userId || '').trim();
+  const userName = normalizeUserName(payload?.userName);
   const role = String(payload?.role || '').trim();
   if (!['user', 'seller'].includes(role)) {
     throw new Error('Role must be user or seller');
   }
 
-  const users = readUsers();
-  const target = users.find((user) => user.id === userId);
+  const target = findAccount(userName);
   if (!target) throw new Error('User not found');
   if (target.role === 'admin') throw new Error('Admin accounts cannot be changed here');
 
-  target.role = role;
-  target.updatedAt = new Date().toISOString();
-  await writeUsers(users);
+  const updated = await updateAccountRole(userName, role);
 
-  const { password, ...safeUser } = target;
-  const token = generateToken(target);
-  const connections = clientMap.get(target.id);
+  const safeUser = safeAccount({ ...updated, visitorIds: listAccounts().find((item) => item.userName === userName)?.visitorIds || [] });
+  const connections = clientMap.get(userName);
   connections?.forEach((client) => {
-    client.user = { id: target.id, username: target.username, role: target.role, name: target.name };
-    client.userId = target.id;
+    client.user = { ...client.user, role };
+    const token = generateToken(client.user);
+    client.send(JSON.stringify({ type: 'auth.role_updated', success: true, data: { user: client.user, token } }));
   });
-  sendToUser(target.id, { type: 'auth.role_updated', success: true, data: { user: safeUser, token } });
 
   return safeUser;
 }
@@ -947,7 +1009,7 @@ function handleAdminArticleCreate(payload, ws) {
     id: uuidv4(), title, slug, summary, content, category,
     image: String(payload?.image || '').trim().slice(0, 500), status,
     readTime: `${estimatedMinutes} min read`,
-    authorId: ws.userId, authorName: ws.user.name || ws.user.username,
+    authorUserName: ws.userName, authorName: ws.user.name || ws.user.userName,
     publishedAt: status === 'published' ? now : null,
     createdAt: now, updatedAt: now,
   };
@@ -989,7 +1051,7 @@ function handleAdminFaqCreate(payload, ws) {
   const allowedStatuses = ['draft', 'review', 'published'];
   const status = allowedStatuses.includes(payload?.status) ? payload.status : 'draft';
   const now = new Date().toISOString();
-  const faq = { id: uuidv4(), question, answer, category, status, authorId: ws.userId, createdAt: now, updatedAt: now };
+  const faq = { id: uuidv4(), question, answer, category, status, authorUserName: ws.userName, createdAt: now, updatedAt: now };
   const faqs = readList(FAQS_FILE);
   faqs.push(faq);
   writeList(FAQS_FILE, faqs);
@@ -1019,28 +1081,28 @@ function handleGetSales() {
     //逐项判断用户是否拥有销售员角色
     .filter(u => u.role === 'seller')
     //将销售账号转换为前端安全字段
-    .map(u => ({ id: u.id, username: u.username, name: u.name, role: u.role }));
+    .map(u => ({ userName: u.userName, name: u.name, role: u.role }));
 }
 
 //返回当前用户参与的即时通信房间列表
 function handleGetIMRooms(payload, ws) {
   checkAuth(ws);
-  const userId = ws.userId;
+  const userName = ws.userName;
   const allUsers = readUsers();
 
   const rooms = [];
   for (const roomId of Object.keys(imRooms)) {
     const room = imRooms[roomId];
-    if (room.members.includes(userId)) {
+    if (room.members.includes(userName)) {
       //查找即时通信房间中的另一位成员
-      const otherId = room.members.find(id => id !== userId);
+      const otherUserName = room.members.find(member => member !== userName);
       //根据成员ID查找用户信息
-      const otherUser = allUsers.find(u => u.id === otherId);
+      const otherUser = allUsers.find(u => u.userName === otherUserName);
       rooms.push({
         roomId: room.roomId,
         otherUser: otherUser
-          ? { id: otherUser.id, name: otherUser.name, username: otherUser.username, role: otherUser.role }
-          : room.memberNames[otherId] || { id: otherId, name: 'Unknown' },
+          ? { userName: otherUser.userName, name: otherUser.name, role: otherUser.role }
+          : { userName: otherUserName, name: room.memberNames[otherUserName] || 'Unknown' },
         lastMessage: room.lastMessage,
         updatedAt: room.updatedAt
       });
@@ -1058,7 +1120,7 @@ function handleGetIMMessages(payload, ws) {
   checkAuth(ws);
   const { roomId } = payload || {};
   if (!roomId || !imRooms[roomId]) throw new Error('Conversation not found');
-  if (!imRooms[roomId].members.includes(ws.userId)) throw new Error('Access denied');
+  if (!imRooms[roomId].members.includes(ws.userName)) throw new Error('Access denied');
 
   return (imMessages[roomId] || []).slice(-100); // Last 100 messages
 }
@@ -1066,29 +1128,29 @@ function handleGetIMMessages(payload, ws) {
 //创建即时通信房间或发送聊天消息
 async function handleIMSend(payload, ws) {
   checkAuth(ws);
-  let { roomId, toUserId, content } = payload || {};
+  let { roomId, toUserName, content } = payload || {};
   if (!content || !content.trim()) throw new Error('Message cannot be empty');
 
-  // Create room if toUserId provided and roomId doesn't exist
-  if (!roomId && toUserId) {
+  // Create room if toUserName provided and roomId doesn't exist
+  if (!roomId && toUserName) {
     const allUsers = readUsers();
     //根据接收者ID查找目标用户
-    const targetUser = allUsers.find(u => u.id === toUserId);
+    const targetUser = allUsers.find(u => u.userName === normalizeUserName(toUserName));
     if (!targetUser) throw new Error('Recipient not found');
 
-    const senderUser = { id: ws.userId, name: ws.user.name || ws.user.username, username: ws.user.username };
+    const senderUser = { userName: ws.userName, name: ws.user.name || ws.user.userName };
     const room = getOrCreateRoom(senderUser, targetUser);
     roomId = room.roomId;
   }
 
   if (!roomId || !imRooms[roomId]) throw new Error('Conversation not found');
-  if (!imRooms[roomId].members.includes(ws.userId)) throw new Error('Access denied');
+  if (!imRooms[roomId].members.includes(ws.userName)) throw new Error('Access denied');
 
   const msg = {
     id: uuidv4(),
     roomId,
-    senderId: ws.userId,
-    senderName: ws.user.name || ws.user.username,
+    senderUserName: ws.userName,
+    senderName: ws.user.name || ws.user.userName,
     content: content.trim(),
     timestamp: new Date().toISOString()
   };
@@ -1098,14 +1160,14 @@ async function handleIMSend(payload, ws) {
   imRooms[roomId].updatedAt = msg.timestamp;
   await db.upsert('imRooms', roomId, imRooms[roomId]);
   await db.upsert('imMessages', msg.id, msg, roomId);
-  await db.recordUserEvent({ userId: ws.userId, eventType: 'im.message_sent', entityType: 'im_room', entityId: roomId });
+  await db.recordUserEvent({ visitorId: ws.visitorId, eventType: 'im.message_sent', entityType: 'im_room', entityId: roomId });
 
   // Forward to all room members EXCEPT sender
   const pushMsg = { type: 'im.message', success: true, data: msg };
   //将新消息推送给房间内除发送者外的成员
-  imRooms[roomId].members.forEach(memberId => {
-    if (memberId !== ws.userId) {
-      sendToUser(memberId, pushMsg);
+  imRooms[roomId].members.forEach(memberUserName => {
+    if (memberUserName !== ws.userName) {
+      sendToUser(memberUserName, pushMsg);
     }
   });
 
@@ -1131,8 +1193,8 @@ const handlers = {
   'quote.submit':       { fn: handleQuoteSubmit,     auth: true  },
   'support.chat':       { fn: handleSupportChat,   auth: false },
   'support.faq':        { fn: handleSupportFAQ,    auth: false },
-  'support.conversation.get': { fn: handleSupportConversationGet, auth: true },
-  'support.message.send': { fn: handleSupportMessageSend, auth: true },
+  'support.conversation.get': { fn: handleSupportConversationGet, auth: false },
+  'support.message.send': { fn: handleSupportMessageSend, auth: false },
   'support.handoff.request': { fn: handleSupportHandoffRequest, auth: true },
   'support.queue.list': { fn: handleSupportQueueList, auth: true },
   'support.conversation.claim': { fn: handleSupportClaim, auth: true },
@@ -1181,30 +1243,39 @@ function createWSServer(server) {
   wss.on('connection', (ws, req) => {
     ws.__alive = true;
     ws.user = null;
-    ws.userId = null;
-    ws.guestChatId = uuidv4();
+    ws.userName = null;
+    ws.visitorId = uuidv4();
+    ws.guestChatId = ws.visitorId;
 
     // Auth via token query param
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
+      const requestedVisitorId = url.searchParams.get('visitorId');
+      if (requestedVisitorId) ws.visitorId = normalizeVisitorId(requestedVisitorId);
+      ws.guestChatId = ws.visitorId;
       const token = url.searchParams.get('token');
       if (token) {
         const decoded = jwt.verify(token, JWT_SECRET);
-        const storedUser = readUsers().find((user) => user.id === decoded.id);
-        if (storedUser) {
-          ws.user = { id: storedUser.id, username: storedUser.username, role: storedUser.role, name: storedUser.name };
-          ws.userId = storedUser.id;
-          addClient(storedUser.id, ws);
+        const storedUser = findAccount(decoded.userName);
+        const visitorIsLinked = storedUser && decoded.visitorId === ws.visitorId
+          && accountRows(decoded.userName).some((row) => row.visitorId === ws.visitorId);
+        if (visitorIsLinked) {
+          const visitorAccount = accountRows(decoded.userName).find((row) => row.visitorId === ws.visitorId);
+          ws.user = safeAccount(visitorAccount);
+          ws.userName = storedUser.userName;
+          addClient(storedUser.userName, ws);
         }
       }
     } catch (e) { /* invalid/expired token, continue unauthenticated */ }
+    addVisitorClient(ws.visitorId, ws);
 
     //在客户端响应心跳时更新连接存活状态
     ws.on('pong', () => { ws.__alive = true; });
 
     //在连接关闭时移除用户在线客户端记录
     ws.on('close', () => {
-      if (ws.userId) removeClient(ws.userId, ws);
+      if (ws.userName) removeClient(ws.userName, ws);
+      removeVisitorClient(ws.visitorId, ws);
     });
 
     //解析WebSocket消息并路由到对应业务处理器

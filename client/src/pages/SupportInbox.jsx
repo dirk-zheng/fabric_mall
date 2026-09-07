@@ -59,7 +59,7 @@ export default function SupportInbox() {
     const offConversation = wsClient.on('support.conversation.updated', (updated) => {
       setConversations((current) => {
         const next = current.filter((item) => item.id !== updated.id);
-        if (updated.status !== 'closed' && (admin || updated.status === 'waiting_human' || updated.assignedTo === user.id)) next.unshift(updated);
+        if (updated.status !== 'closed' && (admin || updated.status === 'waiting_human' || updated.assignedTo === user.userName)) next.unshift(updated);
         return next.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
       });
       if (selected?.id === updated.id) setSelected(updated);
@@ -68,7 +68,7 @@ export default function SupportInbox() {
       if (selected?.id === message.conversationId) setMessages((current) => mergeMessages(current, [message]));
     });
     return () => { offConversation(); offMessage(); };
-  }, [selected?.id, user.id, admin]);
+  }, [selected?.id, user.userName, admin]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -109,13 +109,13 @@ export default function SupportInbox() {
 
   const filtered = useMemo(() => conversations.filter((conversation) => {
     if (filter === 'waiting') return conversation.status === 'waiting_human';
-    if (filter === 'mine') return conversation.assignedTo === user.id;
+    if (filter === 'mine') return conversation.assignedTo === user.userName;
     if (filter === 'resolved') return conversation.status === 'resolved';
     return conversation.status !== 'resolved';
-  }), [conversations, filter, user.id]);
+  }), [conversations, filter, user.userName]);
 
-  const canReply = selected?.assignedTo === user.id && selected?.status === 'human_active';
-  const canClaim = selected && selected.status !== 'resolved' && selected.assignedTo !== user.id;
+  const canReply = selected?.assignedTo === user.userName && selected?.status === 'human_active';
+  const canClaim = selected && selected.status !== 'resolved' && selected.assignedTo !== user.userName;
 
   return (
     <div className="min-h-screen bg-slate-50 px-4 pb-10 pt-24 sm:px-6">
@@ -148,7 +148,7 @@ export default function SupportInbox() {
           <main className="flex min-h-[520px] flex-col">
             {!selected ? <div className="flex flex-1 flex-col items-center justify-center px-8 text-center text-slate-400"><Headphones size={42} className="mb-4 text-slate-300" /><p className="font-semibold text-slate-600">Select a conversation</p><p className="mt-1 text-sm">Waiting conversations can be claimed by one representative at a time.</p></div> : <>
               <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-                <div><h2 className="font-semibold text-slate-900">{selected.customerName}</h2><p className="text-xs text-slate-500">@{selected.customerUsername} · {statusLabels[selected.status]}</p></div>
+                <div><h2 className="font-semibold text-slate-900">{selected.customerName}</h2><p className="text-xs text-slate-500">@{selected.customerUserName} · {statusLabels[selected.status]}</p></div>
                 <div className="flex gap-2">{canClaim && <button type="button" disabled={busy} onClick={() => runAction(() => supportAPI.claimConversation(selected.id))} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{selected.assignedTo && admin ? 'Take over' : 'Claim conversation'}</button>}{selected.status === 'human_active' && (canReply || admin) && <button type="button" disabled={busy} onClick={() => runAction(() => supportAPI.resolveConversation(selected.id))} className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600"><CheckCircle2 size={14} />Resolve</button>}</div>
               </header>
               <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50/50 p-4">
@@ -161,7 +161,7 @@ export default function SupportInbox() {
 
           <aside className="border-t border-slate-200 bg-slate-50/60 p-5 lg:border-l lg:border-t-0">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Customer details</h3>
-            {selected ? <div className="mt-4 space-y-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary"><UserRound size={19} /></div><div><p className="text-sm font-semibold text-slate-900">{selected.customerName}</p><p className="text-xs text-slate-500">@{selected.customerUsername}</p></div></div><div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><p className="font-semibold text-slate-900">Assigned to</p><p className="mt-1">{selected.assignedName || 'Unassigned'}</p></div><div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><p className="flex items-center gap-1 font-semibold text-slate-900"><Clock size={13} />Conversation</p><p className="mt-1">Started {new Date(selected.createdAt).toLocaleString('en-US')}</p></div>{admin && selected.status !== 'resolved' && <label className="block text-xs font-semibold text-slate-700">Transfer to<select value={selected.assignedTo || ''} onChange={(event) => event.target.value && runAction(() => supportAPI.transferConversation(selected.id, event.target.value))} disabled={busy} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"><option value="">Select team member</option>{staff.filter((member) => member.id !== selected.assignedTo).map((member) => <option key={member.id} value={member.id}>{member.name} · {member.role}</option>)}</select></label>}</div> : <p className="mt-4 text-sm text-slate-400">Customer context appears here.</p>}
+            {selected ? <div className="mt-4 space-y-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary"><UserRound size={19} /></div><div><p className="text-sm font-semibold text-slate-900">{selected.customerName}</p><p className="text-xs text-slate-500">@{selected.customerUserName}</p></div></div><div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><p className="font-semibold text-slate-900">Assigned to</p><p className="mt-1">{selected.assignedName || 'Unassigned'}</p></div><div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600"><p className="flex items-center gap-1 font-semibold text-slate-900"><Clock size={13} />Conversation</p><p className="mt-1">Started {new Date(selected.createdAt).toLocaleString('en-US')}</p></div>{admin && selected.status !== 'resolved' && <label className="block text-xs font-semibold text-slate-700">Transfer to<select value={selected.assignedTo || ''} onChange={(event) => event.target.value && runAction(() => supportAPI.transferConversation(selected.id, event.target.value))} disabled={busy} className="mt-2 w-full rounded-lg border-slate-200 bg-white px-3 py-2 text-sm font-normal"><option value="">Select team member</option>{staff.filter((member) => member.userName !== selected.assignedTo).map((member) => <option key={member.userName} value={member.userName}>{member.name} · {member.role}</option>)}</select></label>}</div> : <p className="mt-4 text-sm text-slate-400">Customer context appears here.</p>}
           </aside>
         </div>
       </div>

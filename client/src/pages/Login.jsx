@@ -7,7 +7,7 @@ import { Eye, EyeOff, Lock, User, ArrowRight, Loader2, Sparkles, Shield, Users, 
 export default function Login() {
   const location = useLocation();
   const [isLogin, setIsLogin] = useState(() => new URLSearchParams(location.search).get('mode') !== 'register');
-  const [username, setUsername] = useState('');
+  const [userName, setUserName] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -28,9 +28,9 @@ export default function Login() {
 
     try {
       if (isLogin) {
-        await login(username, password);
+        await login(userName, password);
       } else {
-        await register(username, password, name);
+        await register(userName, password, name);
       }
       navigate(from, { replace: true });
     } catch (err) {
@@ -142,20 +142,20 @@ export default function Login() {
                 </div>
               )}
 
-              {/* Username */}
+              {/* User name */}
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-dark-700">
-                  Username or email
+                  User name or email
                 </label>
                 <div className="relative">
                   <input
                     type="text"
-                    value={username}
+                    value={userName}
                     onChange={(e) => {
                                 //处理页面交互事件
-                                return setUsername(e.target.value);
+                                return setUserName(e.target.value);
                               }}
-                    placeholder="Enter username or email"
+                    placeholder="Enter user name or email"
                     required
                     className="w-full px-4 py-3 pl-11 rounded-xl border border-dark-200 focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all bg-white"
                   />

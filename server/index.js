@@ -111,8 +111,8 @@ async function startServer() {
   if (String(process.env.DB_AUTO_SCHEMA || '').toLowerCase() === 'true') await installSchema();
   await initializeDatabase();
   const adminResult = await ensureAdminAccount();
-  if (adminResult.created) console.log(`  Fixed administrator created: ${adminResult.user.username}`);
-  else if (adminResult.updated) console.log(`  Fixed administrator synchronized: ${adminResult.user.username}`);
+  if (adminResult.created) console.log(`  Fixed administrator created: ${adminResult.user.userName}`);
+  else if (adminResult.updated) console.log(`  Fixed administrator synchronized: ${adminResult.user.userName}`);
   wsServer = createWSServer(server);
   server.listen(PORT, HOST, () => {
   console.log('╔══════════════════════════════════════════╗');

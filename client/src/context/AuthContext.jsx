@@ -6,6 +6,7 @@ const AuthContext = createContext(null);
 //渲染:渲染AuthProvider组件或页面内容
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [behavior, setBehavior] = useState({ visitorIds: [], events: [] });
   const [loading, setLoading] = useState(true);
 
   // 页面加载时检查本地存储的登录状态
@@ -19,10 +20,11 @@ export function AuthProvider({ children }) {
         if (parsed.token) {
           setUser(parsed);
           // 验证 token 是否仍然有效
-          authAPI.getMe().then(userData => {
+          authAPI.getMe().then(({ user: userData, behavior: mergedBehavior }) => {
                                  //处理异步请求成功结果
 
             setUser({ ...userData, token: parsed.token });
+            setBehavior(mergedBehavior);
           }).catch(() => {
                      //处理异步请求异常
 
@@ -53,24 +55,26 @@ export function AuthProvider({ children }) {
   }, []);
 
   // 登录函数
-  const login = async (username, password) => {
+  const login = async (userName, password) => {
                   //处理回调函数逻辑
 
-    const res = await authAPI.login(username, password);
+    const res = await authAPI.login(userName, password);
     const userData = { ...res.user, token: res.token };
     setUser(userData);
+    setBehavior(res.behavior);
     localStorage.setItem('mall_user', JSON.stringify(userData));
     wsClient.setToken(res.token);
     return userData;
   };
 
   // 注册函数
-  const register = async (username, password, name, quoteReference = '') => {
+  const register = async (userName, password, name, quoteReference = '') => {
                      //处理回调函数逻辑
 
-    const res = await authAPI.register(username, password, name, quoteReference);
+    const res = await authAPI.register(userName, password, name, quoteReference);
     const userData = { ...res.user, token: res.token };
     setUser(userData);
+    setBehavior(res.behavior);
     localStorage.setItem('mall_user', JSON.stringify(userData));
     wsClient.setToken(res.token);
     return userData;
@@ -81,6 +85,7 @@ export function AuthProvider({ children }) {
                    //处理回调函数逻辑
 
     setUser(null);
+    setBehavior({ visitorIds: [], events: [] });
     localStorage.removeItem('mall_user');
     wsClient.disconnect();
   };
@@ -95,6 +100,7 @@ export function AuthProvider({ children }) {
 
   const value = {
     user,
+    behavior,
     loading,
     login,
     register,
