@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import wsClient from '../api/ws';
 import FloatingSupport from './FloatingSupport';
 
-const CLICKED_KEY = 'curva_denim_buyer_support_clicked';
+const CLICKED_KEY = 'curva_fabric_support_badge_seen_v1';
 
 //渲染:渲染SupportWidget组件或页面内容
 export default function SupportWidget() {
@@ -100,15 +100,16 @@ export default function SupportWidget() {
           isOpen ? 'rotate-90' : ''
         }`}
         title={isStaff ? 'Buyer Messages' : 'Wholesale Buyer Support'}
+        aria-label={isOpen ? 'Close wholesale buyer support' : 'Open wholesale buyer support, 1 new prompt'}
       >
         {/* Big Red Dot */}
         {showDot && (
-          <span className="absolute -right-1.5 -top-1.5 flex h-7 min-w-7 items-center justify-center rounded-full border-[3px] border-white bg-red-500 shadow-lg animate-pulse">
+          <span className="absolute right-3 top-3 flex h-8 min-w-8 items-center justify-center rounded-full border-[3px] border-white bg-gradient-to-br from-red-500 to-rose-600 shadow-lg shadow-red-900/25 ring-1 ring-red-700/15 transition-transform duration-200">
             {isStaff && unreadCount > 0 ? (
-              <span className="text-white text-[10px] font-bold leading-none px-1">
+              <span className="px-1 text-[11px] font-bold leading-none text-white">
                 {unreadCount > 99 ? '99+' : unreadCount}
               </span>
-            ) : null}
+            ) : <span className="px-1 text-xs font-bold leading-none text-white">1</span>}
           </span>
         )}
 
